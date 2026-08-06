@@ -4,10 +4,13 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from concurrent.futures import ThreadPoolExecutor
+import warnings
+
+# Konsol uyarılarını gizle
+warnings.filterwarnings('ignore')
 
 # ---------------------------------------------------------
-# 1. STREAMLIT SAYFA AYARI (İLK KOMUT OLMALI)
+# 1. STREAMLIT SAYFA AYARI
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="BİST 100 Institutional Quant & SMC Engine",
@@ -33,7 +36,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# BİST 100 HİSSE LİSTESİ (Güncel Semboller)
+# BİST 100 HİSSE LİSTESİ
 BIST_100_STOCKS = [
     "AEFES.IS", "AGHOL.IS", "AHGAZ.IS", "AKBNK.IS", "AKCNS.IS", "AKFGY.IS", "AKSA.IS", "AKSEN.IS",
     "ALARK.IS", "ALBRK.IS", "ALFAS.IS", "ANSGR.IS", "ARCLK.IS", "ASELS.IS", "ASTOR.IS", "BERA.IS",
@@ -49,7 +52,7 @@ BIST_100_STOCKS = [
 ]
 
 # ---------------------------------------------------------
-# 2. İNDİKATÖR VE SMC HESAPLAMA MOTORU (WILDER SMOOTHING)
+# 2. İNDİKATÖR VE SMC HESAPLAMA MOTORU
 # ---------------------------------------------------------
 def calculate_wilder_rsi(series, period=14):
     delta = series.diff()
@@ -70,28 +73,23 @@ def calculate_wilder_atr(df, period=14):
 def calculate_indicators(df):
     df = df.copy()
     
-    # Hareketli Ortalamalar
     df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
     df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
     df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
     
-    # Wilder Göstergeleri
     df['RSI'] = calculate_wilder_rsi(df['Close'], 14)
     df['ATR'] = calculate_wilder_atr(df, 14)
     
-    # MACD
     ema12 = df['Close'].ewm(span=12, adjust=False).mean()
     ema26 = df['Close'].ewm(span=26, adjust=False).mean()
     df['MACD'] = ema12 - ema26
     df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
     df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
     
-    # Hacim & VWAP
     df['Vol_SMA20'] = df['Volume'].rolling(20).mean()
     df['RVOL'] = df['Volume'] / (df['Vol_SMA20'] + 1e-9)
     df['VWAP'] = (df['Volume'] * (df['High'] + df['Low'] + df['Close']) / 3).cumsum() / (df['Volume'].cumsum() + 1e-9)
     
-    # SMC Bileşenleri
     df['Bullish_FVG'] = (df['Low'] > df['High'].shift(2)) & ((df['Low'] - df['High'].shift(2)) > (df['ATR'] * 0.15))
     df['Swing_High'] = df['High'].rolling(window=5, center=True).max()
     df['BOS_Bullish'] = (df['Close'] > df['Swing_High'].shift(1)) & (df['Close'].shift(1) <= df['Swing_High'].shift(1))
@@ -112,23 +110,19 @@ def compute_score(df):
     prev = df.iloc[-2]
     
     score = 0
-    # Trend (Max 35)
     if last['Close'] > last['EMA_200']: score += 15
     if last['Close'] > last['EMA_20']: score += 10
     if last['EMA_20'] > last['EMA_50']: score += 10
     
-    # Momentum (Max 30)
     if 45 <= last['RSI'] <= 65: score += 15
     elif last['RSI'] < 35: score += 10
     if last['MACD'] > last['MACD_Signal']: score += 10
     if last['MACD_Hist'] > prev['MACD_Hist']: score += 5
     
-    # Hacim (Max 15)
     if last['RVOL'] > 1.5: score += 10
     elif last['RVOL'] > 1.0: score += 5
     if last['Close'] > last['VWAP']: score += 5
     
-    # SMC (Max 20)
     if last['Bullish_FVG']: score += 10
     if last['BOS_Bullish']: score += 5
     if last['Bullish_OB']: score += 5
@@ -136,7 +130,7 @@ def compute_score(df):
     return float(round(score, 1))
 
 # ---------------------------------------------------------
-# 4. KUSURSUZ BACKTEST (NO LOOK-AHEAD BIAS)
+# 4. BACKTEST MOTORU
 # ---------------------------------------------------------
 def run_backtest(df, score_threshold=65):
     trades = []
@@ -183,21 +177,19 @@ def run_backtest(df, score_threshold=65):
     return round(win_rate, 1), round(profit_factor, 2), len(trades)
 
 # ---------------------------------------------------------
-# 5. GÜVENLİ VE CACHE'Lİ VERİ ÇEKME
+# 5. GÜVENLİ VE THREAD-FREE VERİ ÇEKME
 # ---------------------------------------------------------
 @st.cache_data(ttl=1800)
-def fetch_stock_data(symbol):
+def fetch_all_stocks_data(symbols):
     try:
-        ticker = yf.Ticker(symbol)
-        df = ticker.history(period="2y", auto_adjust=True)
-        if df.empty or len(df) < 50:
-            return symbol, None
-        return symbol, df
+        # threads=False ile ScriptRunContext uyarısı tamamen engellenir
+        data = yf.download(symbols, period="2y", group_by='ticker', auto_adjust=True, progress=False, threads=False)
+        return data
     except Exception:
-        return symbol, None
+        return None
 
 # ---------------------------------------------------------
-# 6. UYGULAMA ARAYÜZÜ VE TARAMA
+# 6. ARAYÜZ
 # ---------------------------------------------------------
 st.title("⚡ BİST 100 Multi-Faktör Tarama & Quant Paneli")
 st.caption("v33 Ultimate Motoru: Wilder Göstergeleri, SMC Yapıları ve Risk Yönetimi")
@@ -217,65 +209,69 @@ scan_btn = st.button("🔄 Radarı Başlat / Yenile")
 
 if scan_btn or 'quant_data' not in st.session_state:
     results = []
-    progress = st.progress(0)
     status = st.empty()
+    status.text("BİST 100 verileri indiriliyor ve işleniyor...")
     
-    total = len(BIST_100_STOCKS)
+    batch_data = fetch_all_stocks_data(BIST_100_STOCKS)
     
-    # Thread Safe Veri Çekme (max_workers=4 RAM dostudur)
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = [executor.submit(fetch_stock_data, s) for s in BIST_100_STOCKS]
-        
-        for idx, future in enumerate(futures):
-            progress.progress((idx + 1) / total)
-            status.text(f"Hisse işleniyor... ({idx + 1}/{total})")
-            
+    if batch_data is not None:
+        for symbol in BIST_100_STOCKS:
             try:
-                symbol, df = future.result()
-                if df is not None:
-                    df = calculate_indicators(df)
-                    score = compute_score(df)
-                    win_rate, profit_factor, trade_count = run_backtest(df)
+                if len(BIST_100_STOCKS) > 1:
+                    if symbol in batch_data.columns.levels[0]:
+                        df = batch_data[symbol].dropna(how='all')
+                    else:
+                        continue
+                else:
+                    df = batch_data.dropna(how='all')
                     
-                    last = df.iloc[-1]
-                    close = last['Close']
-                    atr = last['ATR'] if not np.isnan(last['ATR']) else close * 0.02
-                    
-                    if score >= 65: signal = "🟢 GÜÇLÜ AL"
-                    elif score <= 35: signal = "🔴 GÜÇLÜ SAT"
-                    else: signal = "⚪ NÖTR"
-                    
-                    stop_loss = round(close - (atr * 1.5), 2)
-                    tp1 = round(close + (atr * 1.5), 2)
-                    tp2 = round(close + (atr * 3.0), 2)
-                    
-                    risk_per_share = abs(close - stop_loss)
-                    risk_amount = portfolio_size * 0.02
-                    suggested_lot = int(risk_amount / risk_per_share) if risk_per_share > 0 else 1
-                    suggested_lot = max(1, suggested_lot)
-                    
-                    results.append({
-                        "Hisse": symbol.replace(".IS", ""),
-                        "Sinyal": signal,
-                        "Quant Skor": score,
-                        "Son Fiyat": f"{close:.2f} ₺",
-                        "Stop Loss": f"{stop_loss:.2f} ₺",
-                        "TP1 Hedef": f"{tp1:.2f} ₺",
-                        "TP2 Hedef": f"{tp2:.2f} ₺",
-                        "Önerilen Lot": f"{suggested_lot} Lot",
-                        "RSI": round(last['RSI'], 1),
-                        "RVOL": round(last['RVOL'], 2),
-                        "WinRate (%)": win_rate,
-                        "Profit Factor": profit_factor,
-                        "İşlem Sayısı": trade_count,
-                        "raw_score": score,
-                        "df": df
-                    })
+                if df.empty or len(df) < 50:
+                    continue
+
+                df = df.dropna(subset=['Close', 'High', 'Low', 'Open', 'Volume'])
+                
+                df = calculate_indicators(df)
+                score = compute_score(df)
+                win_rate, profit_factor, trade_count = run_backtest(df)
+                
+                last = df.iloc[-1]
+                close = last['Close']
+                atr = last['ATR'] if not np.isnan(last['ATR']) else close * 0.02
+                
+                if score >= 65: signal = "🟢 GÜÇLÜ AL"
+                elif score <= 35: signal = "🔴 GÜÇLÜ SAT"
+                else: signal = "⚪ NÖTR"
+                
+                stop_loss = round(close - (atr * 1.5), 2)
+                tp1 = round(close + (atr * 1.5), 2)
+                tp2 = round(close + (atr * 3.0), 2)
+                
+                risk_per_share = abs(close - stop_loss)
+                risk_amount = portfolio_size * 0.02
+                suggested_lot = int(risk_amount / risk_per_share) if risk_per_share > 0 else 1
+                suggested_lot = max(1, suggested_lot)
+                
+                results.append({
+                    "Hisse": symbol.replace(".IS", ""),
+                    "Sinyal": signal,
+                    "Quant Skor": score,
+                    "Son Fiyat": f"{close:.2f} ₺",
+                    "Stop Loss": f"{stop_loss:.2f} ₺",
+                    "TP1 Hedef": f"{tp1:.2f} ₺",
+                    "TP2 Hedef": f"{tp2:.2f} ₺",
+                    "Önerilen Lot": f"{suggested_lot} Lot",
+                    "RSI": round(last['RSI'], 1),
+                    "RVOL": round(last['RVOL'], 2),
+                    "WinRate (%)": win_rate,
+                    "Profit Factor": profit_factor,
+                    "İşlem Sayısı": trade_count,
+                    "raw_score": score,
+                    "df": df
+                })
             except Exception:
                 continue
                 
     status.empty()
-    progress.empty()
     st.session_state['quant_data'] = results
 
 results = st.session_state.get('quant_data', [])
@@ -296,11 +292,11 @@ if results:
     
     with tab1:
         cols = ["Hisse", "Sinyal", "Quant Skor", "Son Fiyat", "Stop Loss", "TP1 Hedef", "TP2 Hedef", "Önerilen Lot", "RSI", "RVOL"]
-        st.dataframe(df_filtered[cols], use_container_width=True, height=500)
+        st.dataframe(df_filtered[cols], width="stretch", height=500)
         
     with tab2:
         bt_cols = ["Hisse", "Quant Skor", "WinRate (%)", "Profit Factor", "İşlem Sayısı"]
-        st.dataframe(df_filtered[bt_cols], use_container_width=True)
+        st.dataframe(df_filtered[bt_cols], width="stretch")
         
     with tab3:
         selected_stock = st.selectbox("Hisse Seçin:", df_filtered['Hisse'].tolist())
@@ -324,4 +320,4 @@ if results:
             fig.add_hline(y=30, line_dash="dash", line_color="#00e676", row=2, col=1)
             
             fig.update_layout(template="plotly_dark", height=550, xaxis_rangeslider_visible=False)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
