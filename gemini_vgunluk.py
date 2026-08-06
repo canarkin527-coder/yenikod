@@ -21,19 +21,72 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom Dark Theme
+# MODERN AYDINLIK TEMA (LIGHT THEME) CSS
 st.markdown("""
 <style>
+    /* Ana Arka Plan ve Yazı Rengi */
     .stApp {
-        background-color: #131722;
-        color: #d1d4dc;
+        background-color: #f8fafc;
+        color: #0f172a;
     }
+    
+    /* Başlıklar ve caption metinleri */
+    h1, h2, h3, h4, h5, h6, label, p, .stCaption {
+        color: #0f172a !important;
+        font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    }
+
+    /* Sol Yan Menü (Sidebar) */
+    section[data-testid="stSidebar"] {
+        background-color: #ffffff !important;
+        border-right: 1px solid #e2e8f0;
+    }
+
+    /* Buton Tasarımı */
     .stButton>button {
         width: 100%;
-        background-color: #2962ff;
-        color: white;
-        font-weight: bold;
+        background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+        color: #ffffff !important;
+        font-weight: 600;
+        border-radius: 8px;
+        border: none;
+        padding: 0.6rem 1rem;
+        box-shadow: 0 2px 4px rgba(37, 99, 235, 0.2);
+        transition: all 0.2s ease;
+    }
+    .stButton>button:hover {
+        background: linear-gradient(135deg, #1d4ed8 0%, #1e40af 100%);
+        box-shadow: 0 4px 6px rgba(37, 99, 235, 0.3);
+    }
+
+    /* Tablolar (Dataframe) */
+    div[data-testid="stDataFrame"] {
+        background-color: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        padding: 6px;
+    }
+
+    /* Input Kutu Arka Planları */
+    div[data-baseweb="input"], div[data-baseweb="select"] {
+        background-color: #ffffff !important;
+        border-radius: 8px !important;
+        border: 1px solid #cbd5e1 !important;
+        color: #0f172a !important;
+    }
+
+    /* Sekmeler (Tabs) */
+    button[data-baseweb="tab"] {
+        background-color: transparent;
+        color: #64748b !important;
+        font-weight: 600;
         border-radius: 6px;
+    }
+    button[data-baseweb="tab"][aria-selected="true"] {
+        background-color: #ffffff !important;
+        color: #2563eb !important;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
     }
 </style>
 """, unsafe_allow_html=True)
@@ -188,25 +241,39 @@ def run_backtest(df, score_threshold=65):
     return round(win_rate, 1), round(profit_factor, 2), len(trades)
 
 # ---------------------------------------------------------
-# 5. ULTRA HIZLI VE SESSİZ VERİ ÇEKME MOTORU (10-15 SANİYE)
+# 5. KİLİTLENMEYEN VE PAKETLİ VERİ ÇEKME MOTORU (PAKETLEME + TIMEOUT)
 # ---------------------------------------------------------
 @st.cache_data(ttl=900)
 def fetch_all_stocks_data(symbols):
+    all_data = []
+    chunk_size = 15
+    chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
+    
     f = io.StringIO()
     with contextlib.redirect_stderr(f), contextlib.redirect_stdout(f):
-        try:
-            data = yf.download(
-                tickers=symbols, 
-                period="2y", 
-                group_by='ticker', 
-                auto_adjust=True, 
-                progress=False, 
-                threads=True,
-                timeout=10
-            )
-            return data
-        except Exception:
-            return None
+        for chunk in chunks:
+            try:
+                data = yf.download(
+                    tickers=chunk, 
+                    period="2y", 
+                    group_by='ticker', 
+                    auto_adjust=True, 
+                    progress=False, 
+                    threads=False,
+                    timeout=3
+                )
+                if data is not None and not data.empty:
+                    all_data.append(data)
+            except Exception:
+                continue
+
+    if not all_data:
+        return None
+        
+    try:
+        return pd.concat(all_data, axis=1)
+    except Exception:
+        return None
 
 # ---------------------------------------------------------
 # 6. UYGULAMA ARAYÜZÜ VE TARAMA
@@ -230,7 +297,7 @@ scan_btn = st.button("🔄 Radarı Başlat / Yenile")
 if scan_btn or 'quant_data' not in st.session_state:
     results = []
     status = st.empty()
-    status.text("BİST 100 verileri indiriliyor ve işleniyor...")
+    status.info("BİST 100 verileri paketler halinde indiriliyor ve işleniyor...")
     
     batch_data = fetch_all_stocks_data(BIST_100_STOCKS)
     
@@ -331,13 +398,14 @@ if results:
                 low=df_chart['Low'], close=df_chart['Close'], name='Fiyat'
             ), row=1, col=1)
             
-            fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['EMA_20'], line=dict(color='#ff9800', width=1), name='EMA 20'), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['EMA_50'], line=dict(color='#2196f3', width=1), name='EMA 50'), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['EMA_20'], line=dict(color='#ff9800', width=1.5), name='EMA 20'), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['EMA_50'], line=dict(color='#2196f3', width=1.5), name='EMA 50'), row=1, col=1)
             fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['EMA_200'], line=dict(color='#9c27b0', width=1.5), name='EMA 200'), row=1, col=1)
             
-            fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['RSI'], line=dict(color='#00e5ff', width=1.5), name='RSI (14)'), row=2, col=1)
-            fig.add_hline(y=70, line_dash="dash", line_color="#ff5252", row=2, col=1)
-            fig.add_hline(y=30, line_dash="dash", line_color="#00e676", row=2, col=1)
+            fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['RSI'], line=dict(color='#0284c7', width=1.5), name='RSI (14)'), row=2, col=1)
+            fig.add_hline(y=70, line_dash="dash", line_color="#ef4444", row=2, col=1)
+            fig.add_hline(y=30, line_dash="dash", line_color="#22c55e", row=2, col=1)
             
-            fig.update_layout(template="plotly_dark", height=550, xaxis_rangeslider_visible=False)
+            # Aydınlık temaya uygun grafik şablonu (plotly_white)
+            fig.update_layout(template="plotly_white", height=550, xaxis_rangeslider_visible=False)
             st.plotly_chart(fig, width="stretch")
