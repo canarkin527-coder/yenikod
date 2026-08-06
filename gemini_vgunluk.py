@@ -1,10 +1,10 @@
 """
 ================================================================================
-BİST 100 AUTOMATED QUANT SCANNER & BROKER TERMINAL
+BİST 100 AUTOMATED QUANT SCANNER & BROKER TERMINAL (FIXED ADX)
 ================================================================================
 - Tüm BİST Watchlist Otomatik Sinyal Taraması (Sadece AL/SAT Verenler Tablosu)
 - Türk Lirası (₺) Tabanlı Stop-Loss, TP1/TP2 ve Lot Hesaplama
-- Tekli Hisse Detaylı Mum Grafiği ve Pivot Analizi
+- Düzeltilmiş ADX Trend Motoru ve Performans İyileştirmesi
 ================================================================================
 """
 
@@ -58,37 +58,13 @@ class SystemConfig:
     
     # Sinyal Filtre Eşikleri
     RVOL_THRESHOLD = 1.5
-    ADX_THRESHOLD = 25.0
+    ADX_THRESHOLD = 20.0        # Trend Eşiği (Daha fazla sinyal için 20'ye çekildi)
     VALIDITY_BARS = 3
     DB_FILE = 'bist_terminal.db'
 
 
 # ==============================================================================
-# 2. DATABASE PERSISTENCE (SQLITE)
-# ==============================================================================
-class DatabaseManager:
-    def __init__(self, db_path: str = SystemConfig.DB_FILE):
-        self.db_path = db_path
-        self._create_tables()
-
-    def _get_connection(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.db_path)
-
-    def _create_tables(self) -> None:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS bist_signals (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT, symbol TEXT, signal_type TEXT,
-                    price REAL, rvol REAL, adx REAL, atr REAL, candle_age INTEGER
-                )
-            ''')
-            conn.commit()
-
-
-# ==============================================================================
-# 3. DATA REPOSITORY (YFINANCE)
+# 2. DATA REPOSITORY (YFINANCE)
 # ==============================================================================
 class BISTDataRepository:
     def __init__(self, config: SystemConfig):
@@ -115,7 +91,7 @@ class BISTDataRepository:
             df = ticker.history(period=f"{years}y", interval=self.cfg.TIMEFRAME)
             
             if df.empty:
-                return self._generate_synthetic_bist_data(years)
+                return pd.DataFrame()
 
             df = df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
             df.columns = ['open', 'high', 'low', 'close', 'volume']
@@ -126,26 +102,11 @@ class BISTDataRepository:
                 
             return df
         except Exception:
-            return self._generate_synthetic_bist_data(years)
-
-    def _generate_synthetic_bist_data(self, years: int) -> pd.DataFrame:
-        periods = 250 * years
-        dates = pd.date_range(end=pd.Timestamp.now(), periods=periods, freq='B')
-        np.random.seed(42)
-        returns = np.random.normal(0.001, 0.02, size=periods)
-        price_paths = 100 * np.exp(np.cumsum(returns))
-        
-        high = price_paths * (1 + np.abs(np.random.normal(0, 0.01, periods)))
-        low = price_paths * (1 - np.abs(np.random.normal(0, 0.01, periods)))
-        open_p = low + np.random.uniform(0, 1, periods) * (high - low)
-        volume = np.random.exponential(1000000, periods)
-        volume[-1] = 4500000
-        
-        return pd.DataFrame({'open': open_p, 'high': high, 'low': low, 'close': price_paths, 'volume': volume}, index=dates)
+            return pd.DataFrame()
 
 
 # ==============================================================================
-# 4. INDICATOR & SIGNAL ENGINE
+# 3. INDICATOR & SIGNAL ENGINE (ADX DÜZELTİLDİ)
 # ==============================================================================
 class IndicatorEngine:
     @classmethod
@@ -164,12 +125,18 @@ class IndicatorEngine:
 
         up_move = h - h.shift(1)
         down_move = l.shift(1) - l
-        plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
-        minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+        
+        plus_dm_arr = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+        minus_dm_arr = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+
+        # İndekslerin eşleşmesi için pd.Series ile sarmalandı
+        plus_dm = pd.Series(plus_dm_arr, index=d.index)
+        minus_dm = pd.Series(minus_dm_arr, index=d.index)
         tr_smooth = tr.ewm(alpha=1/14, adjust=False).mean()
 
-        d['ind_38_plus_di'] = 100 * (pd.Series(plus_dm).ewm(alpha=1/14, adjust=False).mean() / tr_smooth)
-        d['ind_39_minus_di'] = 100 * (pd.Series(minus_dm).ewm(alpha=1/14, adjust=False).mean() / tr_smooth)
+        d['ind_38_plus_di'] = 100 * (plus_dm.ewm(alpha=1/14, adjust=False).mean() / (tr_smooth + 1e-10))
+        d['ind_39_minus_di'] = 100 * (minus_dm.ewm(alpha=1/14, adjust=False).mean() / (tr_smooth + 1e-10))
+        
         dx = 100 * (abs(d['ind_38_plus_di'] - d['ind_39_minus_di']) / (d['ind_38_plus_di'] + d['ind_39_minus_di'] + 1e-10))
         d['ind_40_adx_14'] = dx.ewm(alpha=1/14, adjust=False).mean()
 
@@ -214,11 +181,11 @@ class SignalEngine:
     @staticmethod
     def calculate_star_rating(rvol: float, adx: float) -> str:
         score = 0
-        if rvol >= 1.5: score += 1
-        if rvol >= 2.0: score += 1
-        if adx >= 25: score += 1
-        if adx >= 35: score += 1
-        if rvol >= 2.5 and adx >= 35: score += 1
+        if rvol >= 1.2: score += 1
+        if rvol >= 1.8: score += 1
+        if adx >= 20: score += 1
+        if adx >= 30: score += 1
+        if rvol >= 2.0 and adx >= 30: score += 1
         return "⭐️" * max(1, min(score, 5))
 
 
@@ -265,7 +232,7 @@ class RiskAndPivotEngine:
 
 
 # ==============================================================================
-# 5. STREAMLIT SCANNER DASHBOARD
+# 4. STREAMLIT SCANNER DASHBOARD
 # ==============================================================================
 def main():
     cfg = SystemConfig()
@@ -311,6 +278,8 @@ def main():
                 targets = risk_engine.calculate_trade_targets(cfg.INITIAL_CAPITAL, last['close'], last['ind_27_atr_14'], side if side != "NONE" else "BUY")
                 stars = sig_engine.calculate_star_rating(last['ind_43_rvol'], last['ind_40_adx_14'])
 
+                adx_val = round(last['ind_40_adx_14'], 1) if not np.isnan(last['ind_40_adx_14']) else 0.0
+
                 scan_data.append({
                     "Hisse": clean_sym,
                     "Sinyal": "🟢 GÜÇLÜ AL" if side == "BUY" else ("🔴 GÜÇLÜ SAT" if side == "SELL" else "⚪ NÖTR"),
@@ -321,7 +290,7 @@ def main():
                     "TP2 Hedef": f"{targets['TP2']} ₺",
                     "Önerilen Lot": f"{targets['Lot_Size']} Lot",
                     "Hacim Gücü (RVOL)": round(last['ind_43_rvol'], 2),
-                    "Trend (ADX)": round(last['ind_40_adx_14'], 1),
+                    "Trend (ADX)": adx_val,
                     "Güven": stars,
                     "_raw_side": side
                 })
@@ -347,30 +316,31 @@ def main():
         clean_name = selected_symbol.replace('.IS', '')
         
         raw_df = repo.load_data(selected_symbol)
-        matrix_df = IndicatorEngine.compute_all_indicators(raw_df)
-        processed_df = sig_engine.process_signals(matrix_df)
-        last_row = processed_df.iloc[-1]
-        
-        pivots = risk_engine.calculate_pivots(processed_df)
-        
-        st.write(f"### 📈 {clean_name} Grafik ve Pivot Seviyeleri")
-        
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Son Fiyat", f"{last_row['close']:.2f} ₺")
-        c2.metric("R1 Direnç", f"{pivots['R1']} ₺")
-        c3.metric("S1 Destek", f"{pivots['S1']} ₺")
-        c4.metric("RVOL", f"{last_row['ind_43_rvol']:.2f}")
+        if not raw_df.empty:
+            matrix_df = IndicatorEngine.compute_all_indicators(raw_df)
+            processed_df = sig_engine.process_signals(matrix_df)
+            last_row = processed_df.iloc[-1]
+            
+            pivots = risk_engine.calculate_pivots(processed_df)
+            
+            st.write(f"### 📈 {clean_name} Grafik ve Pivot Seviyeleri")
+            
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Son Fiyat", f"{last_row['close']:.2f} ₺")
+            c2.metric("R1 Direnç", f"{pivots['R1']} ₺")
+            c3.metric("S1 Destek", f"{pivots['S1']} ₺")
+            c4.metric("RVOL", f"{last_row['ind_43_rvol']:.2f}")
 
-        recent_df = processed_df.tail(120)
-        fig = go.Figure()
-        fig.add_trace(go.Candlestick(
-            x=recent_df.index, open=recent_df['open'], high=recent_df['high'],
-            low=recent_df['low'], close=recent_df['close'], name=clean_name
-        ))
-        fig.add_hline(y=pivots['R1'], line_dash="dash", line_color="orange", annotation_text="R1 Direnç")
-        fig.add_hline(y=pivots['S1'], line_dash="dash", line_color="cyan", annotation_text="S1 Destek")
-        fig.update_layout(height=450, template="plotly_dark", xaxis_rangeslider_visible=False)
-        st.plotly_chart(fig, use_container_width=True)
+            recent_df = processed_df.tail(120)
+            fig = go.Figure()
+            fig.add_trace(go.Candlestick(
+                x=recent_df.index, open=recent_df['open'], high=recent_df['high'],
+                low=recent_df['low'], close=recent_df['close'], name=clean_name
+            ))
+            fig.add_hline(y=pivots['R1'], line_dash="dash", line_color="orange", annotation_text="R1 Direnç")
+            fig.add_hline(y=pivots['S1'], line_dash="dash", line_color="cyan", annotation_text="S1 Destek")
+            fig.update_layout(height=450, template="plotly_dark", xaxis_rangeslider_visible=False)
+            st.plotly_chart(fig, use_container_width=True)
 
 
 if __name__ == '__main__':
