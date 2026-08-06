@@ -4,13 +4,15 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import io
+import contextlib
 import warnings
 
 # Konsol uyarılarını gizle
 warnings.filterwarnings('ignore')
 
 # ---------------------------------------------------------
-# 1. STREAMLIT SAYFA AYARI
+# 1. STREAMLIT SAYFA AYARI (İLK KOMUT OLMALI)
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="BİST 100 Institutional Quant & SMC Engine",
@@ -52,7 +54,7 @@ BIST_100_STOCKS = [
 ]
 
 # ---------------------------------------------------------
-# 2. İNDİKATÖR VE SMC HESAPLAMA MOTORU
+# 2. İNDİKATÖR VE SMC HESAPLAMA MOTORU (WILDER SMOOTHING)
 # ---------------------------------------------------------
 def calculate_wilder_rsi(series, period=14):
     delta = series.diff()
@@ -73,23 +75,28 @@ def calculate_wilder_atr(df, period=14):
 def calculate_indicators(df):
     df = df.copy()
     
+    # Hareketli Ortalamalar
     df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
     df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
     df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
     
+    # Wilder Göstergeleri
     df['RSI'] = calculate_wilder_rsi(df['Close'], 14)
     df['ATR'] = calculate_wilder_atr(df, 14)
     
+    # MACD
     ema12 = df['Close'].ewm(span=12, adjust=False).mean()
     ema26 = df['Close'].ewm(span=26, adjust=False).mean()
     df['MACD'] = ema12 - ema26
     df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
     df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
     
+    # Hacim & VWAP
     df['Vol_SMA20'] = df['Volume'].rolling(20).mean()
     df['RVOL'] = df['Volume'] / (df['Vol_SMA20'] + 1e-9)
     df['VWAP'] = (df['Volume'] * (df['High'] + df['Low'] + df['Close']) / 3).cumsum() / (df['Volume'].cumsum() + 1e-9)
     
+    # SMC Bileşenleri
     df['Bullish_FVG'] = (df['Low'] > df['High'].shift(2)) & ((df['Low'] - df['High'].shift(2)) > (df['ATR'] * 0.15))
     df['Swing_High'] = df['High'].rolling(window=5, center=True).max()
     df['BOS_Bullish'] = (df['Close'] > df['Swing_High'].shift(1)) & (df['Close'].shift(1) <= df['Swing_High'].shift(1))
@@ -110,19 +117,23 @@ def compute_score(df):
     prev = df.iloc[-2]
     
     score = 0
+    # Trend (Max 35)
     if last['Close'] > last['EMA_200']: score += 15
     if last['Close'] > last['EMA_20']: score += 10
     if last['EMA_20'] > last['EMA_50']: score += 10
     
+    # Momentum (Max 30)
     if 45 <= last['RSI'] <= 65: score += 15
     elif last['RSI'] < 35: score += 10
     if last['MACD'] > last['MACD_Signal']: score += 10
     if last['MACD_Hist'] > prev['MACD_Hist']: score += 5
     
+    # Hacim (Max 15)
     if last['RVOL'] > 1.5: score += 10
     elif last['RVOL'] > 1.0: score += 5
     if last['Close'] > last['VWAP']: score += 5
     
+    # SMC (Max 20)
     if last['Bullish_FVG']: score += 10
     if last['BOS_Bullish']: score += 5
     if last['Bullish_OB']: score += 5
@@ -130,7 +141,7 @@ def compute_score(df):
     return float(round(score, 1))
 
 # ---------------------------------------------------------
-# 4. BACKTEST MOTORU
+# 4. BACKTEST MOTORU (NO LOOK-AHEAD BIAS)
 # ---------------------------------------------------------
 def run_backtest(df, score_threshold=65):
     trades = []
@@ -177,19 +188,28 @@ def run_backtest(df, score_threshold=65):
     return round(win_rate, 1), round(profit_factor, 2), len(trades)
 
 # ---------------------------------------------------------
-# 5. GÜVENLİ VE THREAD-FREE VERİ ÇEKME
+# 5. ULTRA HIZLI VE SESSİZ VERİ ÇEKME MOTORU (10-15 SANİYE)
 # ---------------------------------------------------------
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=900)
 def fetch_all_stocks_data(symbols):
-    try:
-        # threads=False ile ScriptRunContext uyarısı tamamen engellenir
-        data = yf.download(symbols, period="2y", group_by='ticker', auto_adjust=True, progress=False, threads=False)
-        return data
-    except Exception:
-        return None
+    f = io.StringIO()
+    with contextlib.redirect_stderr(f), contextlib.redirect_stdout(f):
+        try:
+            data = yf.download(
+                tickers=symbols, 
+                period="2y", 
+                group_by='ticker', 
+                auto_adjust=True, 
+                progress=False, 
+                threads=True,
+                timeout=10
+            )
+            return data
+        except Exception:
+            return None
 
 # ---------------------------------------------------------
-# 6. ARAYÜZ
+# 6. UYGULAMA ARAYÜZÜ VE TARAMA
 # ---------------------------------------------------------
 st.title("⚡ BİST 100 Multi-Faktör Tarama & Quant Paneli")
 st.caption("v33 Ultimate Motoru: Wilder Göstergeleri, SMC Yapıları ve Risk Yönetimi")
