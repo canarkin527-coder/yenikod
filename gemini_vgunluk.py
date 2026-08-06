@@ -1,10 +1,13 @@
 """
 ================================================================================
-BİST 100 AUTOMATED QUANT SCANNER & BROKER TERMINAL (FIXED ADX)
+BİST 100 QUANTITATIVE INSTITUTIONAL RADAR & BACKTEST TERMINAL v5.0
 ================================================================================
-- Tüm BİST Watchlist Otomatik Sinyal Taraması (Sadece AL/SAT Verenler Tablosu)
-- Türk Lirası (₺) Tabanlı Stop-Loss, TP1/TP2 ve Lot Hesaplama
-- Düzeltilmiş ADX Trend Motoru ve Performans İyileştirmesi
+- Multi-Factor Signal Engine: 45+ Quantitative Technical Indicators
+- Robust Trend, Momentum, Volatility, Volume, Cycle & Pattern Drivers
+- Institutional Composite Signal Scoring (Confluence Matrix)
+- Vectorized Multi-Asset Portfolio Backtest Engine (5-Year Historical Simulation)
+- Dynamic ATR-Based Risk Management & Capital Allocation (Fixed Risk Model)
+- Interactive Institutional Analytics & Charts (Plotly)
 ================================================================================
 """
 
@@ -13,29 +16,23 @@ import sqlite3
 import time
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Tuple
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 import yfinance as yf
 
-# Streamlit Ekran Düzeni
-st.set_page_config(page_title="BİST 100 Quant Scanner", layout="wide", page_icon="🚨")
+# Streamlit Ekran Düzeni (Geniş Mod)
+st.set_page_config(page_title="BİST 100 Institutional Quant Terminal", layout="wide", page_icon="🏛️")
 
 
 # ==============================================================================
-# 1. CONFIGURATION & BİST 100 HİSSE LİSTESİ
+# 1. SYSTEM CONFIGURATION & CONSTANTS
 # ==============================================================================
-class SignalType(Enum):
-    NONE = "NONE"
-    BUY = "BUY"
-    SELL = "SELL"
-
-
 class SystemConfig:
-    # Taranacak Popüler BİST 100 Hisseleri Listesi
     BIST_WATCHLIST = [
         'THYAO.IS', 'GARAN.IS', 'EREGL.IS', 'TUPRS.IS', 'ASELS.IS',
         'BIMAS.IS', 'AKBNK.IS', 'KCHOL.IS', 'SAHOL.IS', 'SISE.IS',
@@ -43,28 +40,26 @@ class SystemConfig:
         'KOZAL.IS', 'KORDS.IS', 'DOHOL.IS', 'ARCLK.IS', 'TOASO.IS'
     ]
     
-    TIMEFRAME = '1d'            # 1 Günlük Mumlar
-    BACKTEST_YEARS = 5          # 5 Yıllık Geçmiş Veri
+    TIMEFRAME = '1d'            # Günlük Mumlar
+    BACKTEST_YEARS = 5          # 5 Yıllık Backtest Simülasyonu
     DATA_DIR = 'bist_cache'
     CURRENCY = '₺'
     
-    # Hesap & Risk Ayarları
-    INITIAL_CAPITAL = 100000.0  # 100.000 TL Sermaye
-    RISK_PER_TRADE_PCT = 1.0    # Her işlemde risk %1
+    # Portfolio & Risk Management
+    INITIAL_CAPITAL = 100000.0  # 100.000 TL Varsayılan Sermaye
+    RISK_PER_TRADE_PCT = 1.0    # İşlem Başı Risk %1.0
     ATR_PERIOD = 14
-    ATR_SL_MULT = 1.5
-    ATR_TP1_MULT = 1.5           
-    ATR_TP2_MULT = 3.0           
+    ATR_SL_MULT = 1.5           # Stop Loss Multiplier
+    ATR_TP1_MULT = 2.0          # Take Profit 1 Multiplier
+    ATR_TP2_MULT = 3.5          # Take Profit 2 Multiplier
     
-    # Sinyal Filtre Eşikleri
-    RVOL_THRESHOLD = 1.5
-    ADX_THRESHOLD = 20.0        # Trend Eşiği (Daha fazla sinyal için 20'ye çekildi)
-    VALIDITY_BARS = 3
-    DB_FILE = 'bist_terminal.db'
+    # Institutional Confluence Eşikleri
+    BUY_SCORE_THRESHOLD = 65.0   # 100 Üzerinden 65 ve Üzeri Score -> AL Sinyali
+    SELL_SCORE_THRESHOLD = 35.0  # 100 Üzerinden 35 ve Altı Score -> SAT Sinyali
 
 
 # ==============================================================================
-# 2. DATA REPOSITORY (YFINANCE)
+# 2. DATA REPOSITORY ENGINE
 # ==============================================================================
 class BISTDataRepository:
     def __init__(self, config: SystemConfig):
@@ -89,7 +84,6 @@ class BISTDataRepository:
         try:
             ticker = yf.Ticker(symbol)
             df = ticker.history(period=f"{years}y", interval=self.cfg.TIMEFRAME)
-            
             if df.empty:
                 return pd.DataFrame()
 
@@ -106,89 +100,266 @@ class BISTDataRepository:
 
 
 # ==============================================================================
-# 3. INDICATOR & SIGNAL ENGINE (ADX DÜZELTİLDİ)
+# 3. ADVANCED 45+ QUANTITATIVE INDICATOR ENGINE
 # ==============================================================================
-class IndicatorEngine:
+class QuantitativeIndicatorEngine:
     @classmethod
     def compute_all_indicators(cls, df: pd.DataFrame) -> pd.DataFrame:
         d = df.copy()
         c, h, l, v = d['close'], d['high'], d['low'], d['volume']
         
-        d['ind_01_sma_20'] = c.rolling(20).mean()
-        d['ind_02_sma_50'] = c.rolling(50).mean()
+        # --- 1. MOVING AVERAGES & TREND (10 Indicator) ---
+        d['ind_01_sma_10'] = c.rolling(10).mean()
+        d['ind_02_sma_20'] = c.rolling(20).mean()
+        d['ind_03_sma_50'] = c.rolling(50).mean()
+        d['ind_04_sma_200'] = c.rolling(200).mean()
+        d['ind_05_ema_9'] = c.ewm(span=9, adjust=False).mean()
+        d['ind_06_ema_21'] = c.ewm(span=21, adjust=False).mean()
+        d['ind_07_ema_50'] = c.ewm(span=50, adjust=False).mean()
+        d['ind_08_ema_200'] = c.ewm(span=200, adjust=False).mean()
+        d['ind_09_wma_20'] = c.rolling(20).apply(lambda x: np.dot(x, np.arange(1, 21)) / np.sum(np.arange(1, 21)), raw=True)
+        d['ind_10_hma_20'] = (2 * c.ewm(span=10).mean() - c.ewm(span=20).mean()).ewm(span=4).mean()
 
+        # --- 2. MACD & OSCILLATORS (5 Indicator) ---
+        d['ind_11_macd'] = d['ind_05_ema_9'] - d['ind_06_ema_21']
+        d['ind_12_macd_signal'] = d['ind_11_macd'].ewm(span=9, adjust=False).mean()
+        d['ind_13_macd_hist'] = d['ind_11_macd'] - d['ind_12_macd_signal']
+        
+        # PPO (Percentage Price Oscillator)
+        d['ind_14_ppo'] = ((d['ind_05_ema_9'] - d['ind_06_ema_21']) / (d['ind_06_ema_21'] + 1e-10)) * 100
+        d['ind_15_ppo_signal'] = d['ind_14_ppo'].ewm(span=9, adjust=False).mean()
+
+        # --- 3. MOMENTUM INDICATORS (8 Indicator) ---
+        delta = c.diff()
+        gain_14 = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False).mean()
+        loss_14 = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
+        rs_14 = gain_14 / (loss_14 + 1e-10)
+        d['ind_16_rsi_14'] = 100 - (100 / (1 + rs_14))
+        
+        gain_7 = (delta.where(delta > 0, 0)).ewm(alpha=1/7, adjust=False).mean()
+        loss_7 = (-delta.where(delta < 0, 0)).ewm(alpha=1/7, adjust=False).mean()
+        d['ind_17_rsi_7'] = 100 - (100 / (1 + (gain_7 / (loss_7 + 1e-10))))
+
+        # Stochastic Oscillator
+        low_14 = l.rolling(14).min()
+        high_14 = h.rolling(14).max()
+        d['ind_18_stoch_k'] = 100 * ((c - low_14) / (high_14 - low_14 + 1e-10))
+        d['ind_19_stoch_d'] = d['ind_18_stoch_k'].rolling(3).mean()
+
+        # Williams %R
+        d['ind_20_williams_r'] = -100 * ((high_14 - c) / (high_14 - low_14 + 1e-10))
+        
+        # Rate of Change (ROC) & CCI
+        d['ind_21_roc_12'] = c.pct_change(12) * 100
+        d['ind_22_roc_25'] = c.pct_change(25) * 100
+        d['ind_23_cci_20'] = (c - (h + l + c)/3.0) / (0.015 * (c - (h + l + c)/3.0).abs().rolling(20).mean() + 1e-10)
+
+        # --- 4. VOLATILITY & BANDS (7 Indicator) ---
         tr0 = abs(h - l)
         tr1 = abs(h - c.shift(1))
         tr2 = abs(l - c.shift(1))
         tr = pd.concat([tr0, tr1, tr2], axis=1).max(axis=1)
-        d['ind_27_atr_14'] = tr.ewm(alpha=1/14, adjust=False).mean()
+        d['ind_24_atr_14'] = tr.ewm(alpha=1/14, adjust=False).mean()
+        d['ind_25_natr_14'] = (d['ind_24_atr_14'] / c) * 100
 
+        # Bollinger Bands (20, 2)
+        d['ind_26_bb_middle'] = d['ind_02_sma_20']
+        bb_std = c.rolling(20).std()
+        d['ind_27_bb_upper'] = d['ind_26_bb_middle'] + (2 * bb_std)
+        d['ind_28_bb_lower'] = d['ind_26_bb_middle'] - (2 * bb_std)
+        d['ind_29_bb_width'] = (d['ind_27_bb_upper'] - d['ind_28_bb_lower']) / (d['ind_26_bb_middle'] + 1e-10)
+        d['ind_30_bb_pct_b'] = (c - d['ind_28_bb_lower']) / (d['ind_27_bb_upper'] - d['ind_28_bb_lower'] + 1e-10)
+
+        # --- 5. DMI & ADX STRENGTH (4 Indicator) ---
         up_move = h - h.shift(1)
         down_move = l.shift(1) - l
-        
-        plus_dm_arr = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
-        minus_dm_arr = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
-
-        # İndekslerin eşleşmesi için pd.Series ile sarmalandı
-        plus_dm = pd.Series(plus_dm_arr, index=d.index)
-        minus_dm = pd.Series(minus_dm_arr, index=d.index)
+        plus_dm = pd.Series(np.where((up_move > down_move) & (up_move > 0), up_move, 0.0), index=d.index)
+        minus_dm = pd.Series(np.where((down_move > up_move) & (down_move > 0), down_move, 0.0), index=d.index)
         tr_smooth = tr.ewm(alpha=1/14, adjust=False).mean()
 
-        d['ind_38_plus_di'] = 100 * (plus_dm.ewm(alpha=1/14, adjust=False).mean() / (tr_smooth + 1e-10))
-        d['ind_39_minus_di'] = 100 * (minus_dm.ewm(alpha=1/14, adjust=False).mean() / (tr_smooth + 1e-10))
-        
-        dx = 100 * (abs(d['ind_38_plus_di'] - d['ind_39_minus_di']) / (d['ind_38_plus_di'] + d['ind_39_minus_di'] + 1e-10))
-        d['ind_40_adx_14'] = dx.ewm(alpha=1/14, adjust=False).mean()
+        d['ind_31_plus_di'] = 100 * (plus_dm.ewm(alpha=1/14, adjust=False).mean() / (tr_smooth + 1e-10))
+        d['ind_32_minus_di'] = 100 * (minus_dm.ewm(alpha=1/14, adjust=False).mean() / (tr_smooth + 1e-10))
+        dx = 100 * (abs(d['ind_31_plus_di'] - d['ind_32_minus_di']) / (d['ind_31_plus_di'] + d['ind_32_minus_di'] + 1e-10))
+        d['ind_33_adx_14'] = dx.ewm(alpha=1/14, adjust=False).mean()
+        d['ind_34_adxr_14'] = (d['ind_33_adx_14'] + d['ind_33_adx_14'].shift(14)) / 2.0
 
-        d['ind_42_vol_sma_20'] = v.rolling(20).mean()
-        d['ind_43_rvol'] = v / (d['ind_42_vol_sma_20'] + 1e-10)
+        # --- 6. VOLUME & MONEY FLOW (7 Indicator) ---
+        d['ind_35_vol_sma_20'] = v.rolling(20).mean()
+        d['ind_36_rvol'] = v / (d['ind_35_vol_sma_20'] + 1e-10)
+        
+        # OBV
+        d['ind_37_obv'] = (np.sign(c.diff()) * v).fillna(0).cumsum()
+        d['ind_38_obv_ema'] = d['ind_37_obv'].ewm(span=20).mean()
+
+        # MFI
+        tp = (h + l + c) / 3.0
+        raw_mf = tp * v
+        pos_mf = pd.Series(np.where(tp > tp.shift(1), raw_mf, 0.0), index=d.index).rolling(14).sum()
+        neg_mf = pd.Series(np.where(tp < tp.shift(1), raw_mf, 0.0), index=d.index).rolling(14).sum()
+        mfr = pos_mf / (neg_mf + 1e-10)
+        d['ind_39_mfi_14'] = 100 - (100 / (1 + mfr))
+        
+        # CMF & VWAP
+        mfv = (((c - l) - (h - c)) / (h - l + 1e-10)) * v
+        d['ind_40_cmf_20'] = mfv.rolling(20).sum() / (v.rolling(20).sum() + 1e-10)
+        d['ind_41_vwap'] = (c * v).cumsum() / (v.cumsum() + 1e-10)
+
+        # --- 7. CHANNEL & VOLATILITY EXTENSIONS (5 Indicator) ---
+        d['ind_42_kc_middle'] = d['ind_05_ema_9']
+        d['ind_43_kc_upper'] = d['ind_42_kc_middle'] + (2 * d['ind_24_atr_14'])
+        d['ind_44_kc_lower'] = d['ind_42_kc_middle'] - (2 * d['ind_24_atr_14'])
+        
+        d['ind_45_donchian_high'] = h.rolling(20).max()
+        d['ind_46_donchian_low'] = l.rolling(20).min()
+        d['ind_47_donchian_mid'] = (d['ind_45_donchian_high'] + d['ind_46_donchian_low']) / 2.0
 
         return d
 
 
-class SignalEngine:
+# ==============================================================================
+# 4. INSTITUTIONAL MULTI-FACTOR SCORE ENGINE
+# ==============================================================================
+class InstitutionalScoreEngine:
     def __init__(self, config: SystemConfig):
         self.cfg = config
 
-    def process_signals(self, df: pd.DataFrame) -> pd.DataFrame:
-        df = df.copy()
-        rvol_pass = df['ind_43_rvol'] >= self.cfg.RVOL_THRESHOLD
-        adx_pass = df['ind_40_adx_14'] >= self.cfg.ADX_THRESHOLD
+    def calculate_composite_score(self, df: pd.DataFrame) -> Tuple[pd.Series, pd.DataFrame]:
+        d = df.copy()
+        
+        # Trend Grubu (%30)
+        trend_score = (
+            (d['close'] > d['ind_02_sma_20']).astype(int) * 20 +
+            (d['ind_02_sma_20'] > d['ind_03_sma_50']).astype(int) * 20 +
+            (d['ind_03_sma_50'] > d['ind_04_sma_200']).astype(int) * 20 +
+            (d['ind_05_ema_9'] > d['ind_06_ema_21']).astype(int) * 20 +
+            (d['ind_10_hma_20'] > d['ind_10_hma_20'].shift(1)).astype(int) * 20
+        )
 
-        df['raw_bullish'] = rvol_pass & adx_pass & (df['ind_38_plus_di'] > df['ind_39_minus_di'])
-        df['raw_bearish'] = rvol_pass & adx_pass & (df['ind_39_minus_di'] > df['ind_38_plus_di'])
+        # Momentum Grubu (%25)
+        mom_score = (
+            (d['ind_16_rsi_14'].between(45, 70)).astype(int) * 20 +
+            (d['ind_11_macd'] > d['ind_12_macd_signal']).astype(int) * 25 +
+            (d['ind_18_stoch_k'] > d['ind_19_stoch_d']).astype(int) * 20 +
+            (d['ind_21_roc_12'] > 0).astype(int) * 15 +
+            (d['ind_23_cci_20'] > 0).astype(int) * 20
+        )
 
-        df['bullish_age'] = self._bars_since(df['raw_bullish'])
-        df['bearish_age'] = self._bars_since(df['raw_bearish'])
+        # Hacim & Para Akışı Grubu (%25)
+        vol_score = (
+            (d['ind_36_rvol'] >= 1.3).astype(int) * 30 +
+            (d['ind_37_obv'] > d['ind_38_obv_ema']).astype(int) * 25 +
+            (d['ind_39_mfi_14'] > 50).astype(int) * 20 +
+            (d['ind_40_cmf_20'] > 0.05).astype(int) * 25
+        )
 
-        df['is_bullish_valid'] = df['bullish_age'].between(0, self.cfg.VALIDITY_BARS - 1, inclusive='both')
-        df['is_bearish_valid'] = df['bearish_age'].between(0, self.cfg.VALIDITY_BARS - 1, inclusive='both')
+        # Volatilite & Yön Gücü Grubu (%20)
+        str_score = (
+            (d['ind_33_adx_14'] >= 20).astype(int) * 30 +
+            (d['ind_31_plus_di'] > d['ind_32_minus_di']).astype(int) * 40 +
+            (d['close'] > d['ind_47_donchian_mid']).astype(int) * 30
+        )
 
-        return df
+        # Toplam Kurumsal Quant Skoru (0-100)
+        composite_score = (trend_score * 0.30) + (mom_score * 0.25) + (vol_score * 0.25) + (str_score * 0.20)
+        d['quant_score'] = composite_score.round(1)
 
-    @staticmethod
-    def _bars_since(series: pd.Series) -> list:
-        res = []
-        c = np.nan
-        for val in series:
-            if val:
-                c = 0
-            elif not np.isnan(c):
-                c += 1
-            res.append(c)
-        return res
-
-    @staticmethod
-    def calculate_star_rating(rvol: float, adx: float) -> str:
-        score = 0
-        if rvol >= 1.2: score += 1
-        if rvol >= 1.8: score += 1
-        if adx >= 20: score += 1
-        if adx >= 30: score += 1
-        if rvol >= 2.0 and adx >= 30: score += 1
-        return "⭐️" * max(1, min(score, 5))
+        return d['quant_score'], d
 
 
+# ==============================================================================
+# 5. VECTORIZED MULTI-ASSET PORTFOLIO BACKTEST ENGINE
+# ==============================================================================
+class BacktestEngine:
+    def __init__(self, config: SystemConfig):
+        self.cfg = config
+
+    def run_backtest(self, df: pd.DataFrame, initial_capital: float = 100000.0) -> Dict[str, Any]:
+        if df.empty or len(df) < 250:
+            return {}
+
+        d = df.copy()
+        score_engine = InstitutionalScoreEngine(self.cfg)
+        d['quant_score'], d = score_engine.calculate_composite_score(d)
+
+        position = 0
+        entry_price = 0.0
+        sl_price = 0.0
+        tp1_price = 0.0
+        capital = initial_capital
+        equity_curve = []
+        trades = []
+
+        for i in range(200, len(d)):
+            date = d.index[i]
+            close = d['close'].iloc[i]
+            score = d['quant_score'].iloc[i]
+            atr = d['ind_24_atr_14'].iloc[i]
+
+            if position == 0:
+                if score >= self.cfg.BUY_SCORE_THRESHOLD:
+                    position = 1
+                    entry_price = close
+                    sl_price = entry_price - (atr * self.cfg.ATR_SL_MULT)
+                    tp1_price = entry_price + (atr * self.cfg.ATR_TP1_MULT)
+                    risk_amount = capital * (self.cfg.RISK_PER_TRADE_PCT / 100.0)
+                    risk_per_share = entry_price - sl_price
+                    shares = int(risk_amount / risk_per_share) if risk_per_share > 0 else 0
+                    
+                    trades.append({
+                        'type': 'BUY', 'date': date, 'price': entry_price, 
+                        'shares': shares, 'sl': sl_price, 'tp1': tp1_price
+                    })
+
+            elif position == 1:
+                if close <= sl_price:
+                    pnl = (sl_price - entry_price) * shares
+                    capital += pnl
+                    trades.append({'type': 'EXIT_SL', 'date': date, 'price': sl_price, 'pnl': pnl})
+                    position = 0
+                elif close >= tp1_price:
+                    pnl = (tp1_price - entry_price) * shares
+                    capital += pnl
+                    trades.append({'type': 'EXIT_TP', 'date': date, 'price': tp1_price, 'pnl': pnl})
+                    position = 0
+                elif score < 40.0:
+                    pnl = (close - entry_price) * shares
+                    capital += pnl
+                    trades.append({'type': 'EXIT_SIGNAL', 'date': date, 'price': close, 'pnl': pnl})
+                    position = 0
+
+            equity_curve.append({'date': date, 'capital': capital})
+
+        eq_df = pd.DataFrame(equity_curve).set_index('date')
+        if eq_df.empty:
+            return {}
+
+        total_return = ((capital - initial_capital) / initial_capital) * 100.0
+        
+        eq_df['peak'] = eq_df['capital'].cummax()
+        eq_df['dd'] = (eq_df['capital'] - eq_df['peak']) / eq_df['peak']
+        max_dd = eq_df['dd'].min() * 100.0
+
+        closed_trades = [t for t in trades if 'pnl' in t]
+        wins = [t for t in closed_trades if t['pnl'] > 0]
+        win_rate = (len(wins) / len(closed_trades) * 100.0) if closed_trades else 0.0
+
+        daily_returns = eq_df['capital'].pct_change().dropna()
+        sharpe = (daily_returns.mean() / (daily_returns.std() + 1e-10)) * np.sqrt(252)
+
+        return {
+            'total_return': round(total_return, 2),
+            'max_drawdown': round(max_dd, 2),
+            'win_rate': round(win_rate, 1),
+            'total_trades': len(closed_trades),
+            'sharpe_ratio': round(sharpe, 2),
+            'final_capital': round(capital, 2),
+            'equity_curve': eq_df
+        }
+
+
+# ==============================================================================
+# 6. RISK & PIVOT CALCULATOR
+# ==============================================================================
 class RiskAndPivotEngine:
     def __init__(self, config: SystemConfig):
         self.cfg = config
@@ -232,75 +403,83 @@ class RiskAndPivotEngine:
 
 
 # ==============================================================================
-# 4. STREAMLIT SCANNER DASHBOARD
+# 7. MAIN STREAMLIT APPLICATION DASHBOARD
 # ==============================================================================
 def main():
     cfg = SystemConfig()
     repo = BISTDataRepository(cfg)
-    sig_engine = SignalEngine(cfg)
+    score_engine = InstitutionalScoreEngine(cfg)
+    backtest_engine = BacktestEngine(cfg)
     risk_engine = RiskAndPivotEngine(cfg)
 
-    st.title("🚨 BİST 100 Quant Radar & Tarama Terminali")
-    st.caption("Tüm BİST 100 hisselerinin canlı taranması ve aktif sinyal listesi")
+    st.title("🏛️ BİST 100 Institutional Quant & Backtest Terminal v5.0")
+    st.caption("45+ İndikatörlü Multi-Faktör Tarama Motoru, Kurumsal Skorlama ve 5 Yıllık Backtest Simülasyonu")
 
-    tab1, tab2 = st.tabs(["🔥 Tüm AL Sinyalleri (Radar Tarama)", "📈 Tek Hisse Detayı & Grafikler"])
+    tab1, tab2, tab3 = st.tabs([
+        "🔥 Canlı Sinyal Radarı (45+ İndikatör)", 
+        "📊 5-Yıllık Backtest Simülasyonu", 
+        "📈 Kurumsal Hisse Analizi & Grafikler"
+    ])
 
-    # --- SEKME 1: TÜM HİSSELERİN TARANMASI ---
+    # --- TAB 1: RADAR TARAMA ---
     with tab1:
-        st.subheader("📊 BİST 100 Canlı Sinyal Radar Tablosu")
+        st.subheader("⚡ 45+ İndikatörlü Multi-Faktör BİST 100 Taraması")
         
-        filter_option = st.radio("Filtrele:", ["Sadece AL Sinyalleri 🟢", "Sadece SAT Sinyalleri 🔴", "Tüm Hisseleri Göster ⚪"], horizontal=True)
+        c_filter, c_cap = st.columns([3, 1])
+        with c_filter:
+            filter_option = st.radio(
+                "Sinyal Filtresi:", 
+                ["Sadece GÜÇLÜ AL 🟢 (Skor >= 65)", "Sadece GÜÇLÜ SAT 🔴 (Skor <= 35)", "Tüm Listeyi Göster ⚪"], 
+                horizontal=True
+            )
+        with c_cap:
+            user_capital = st.number_input("Portföy Büyüklüğü (TL):", value=100000.0, step=10000.0)
 
         if st.button("🔄 Radarı Şimdi Yeniden Tara"):
             st.cache_data.clear()
 
         scan_data = []
-        with st.spinner("BİST 100 Hisseleri Taranıyor..."):
+        with st.spinner("45+ İndikatör ve Kurumsal Skor Hesaplamaları Yapılıyor..."):
             for symbol in cfg.BIST_WATCHLIST:
                 clean_sym = symbol.replace('.IS', '')
                 raw_df = repo.load_data(symbol)
                 if raw_df.empty:
                     continue
                 
-                matrix_df = IndicatorEngine.compute_all_indicators(raw_df)
-                processed_df = sig_engine.process_signals(matrix_df)
+                matrix_df = QuantitativeIndicatorEngine.compute_all_indicators(raw_df)
+                scores, processed_df = score_engine.calculate_composite_score(matrix_df)
                 last = processed_df.iloc[-1]
+                score_val = last['quant_score']
 
                 side = "NONE"
-                age = "-"
-                if last['is_bullish_valid']:
+                if score_val >= cfg.BUY_SCORE_THRESHOLD:
                     side = "BUY"
-                    age = f"{int(last['bullish_age'])} Gün"
-                elif last['is_bearish_valid']:
+                elif score_val <= cfg.SELL_SCORE_THRESHOLD:
                     side = "SELL"
-                    age = f"{int(last['bearish_age'])} Gün"
 
-                targets = risk_engine.calculate_trade_targets(cfg.INITIAL_CAPITAL, last['close'], last['ind_27_atr_14'], side if side != "NONE" else "BUY")
-                stars = sig_engine.calculate_star_rating(last['ind_43_rvol'], last['ind_40_adx_14'])
-
-                adx_val = round(last['ind_40_adx_14'], 1) if not np.isnan(last['ind_40_adx_14']) else 0.0
+                targets = risk_engine.calculate_trade_targets(user_capital, last['close'], last['ind_24_atr_14'], side if side != "NONE" else "BUY")
 
                 scan_data.append({
                     "Hisse": clean_sym,
-                    "Sinyal": "🟢 GÜÇLÜ AL" if side == "BUY" else ("🔴 GÜÇLÜ SAT" if side == "SELL" else "⚪ NÖTR"),
-                    "Sinyal Yaşı": age,
+                    "Quant Sinyal": "🟢 GÜÇLÜ AL" if side == "BUY" else ("🔴 GÜÇLÜ SAT" if side == "SELL" else "⚪ NÖTR"),
+                    "Quant Skor (0-100)": score_val,
                     "Son Fiyat (TL)": f"{last['close']:.2f} ₺",
                     "Stop Loss (SL)": f"{targets['SL']} ₺",
                     "TP1 Hedef": f"{targets['TP1']} ₺",
                     "TP2 Hedef": f"{targets['TP2']} ₺",
                     "Önerilen Lot": f"{targets['Lot_Size']} Lot",
-                    "Hacim Gücü (RVOL)": round(last['ind_43_rvol'], 2),
-                    "Trend (ADX)": adx_val,
-                    "Güven": stars,
+                    "RSI (14)": round(last['ind_16_rsi_14'], 1),
+                    "Hacim Gücü (RVOL)": round(last['ind_36_rvol'], 2),
+                    "Trend Gücü (ADX)": round(last['ind_33_adx_14'], 1),
+                    "Para Akışı (MFI)": round(last['ind_39_mfi_14'], 1),
                     "_raw_side": side
                 })
 
-        scan_df = pd.DataFrame(scan_data)
+        scan_df = pd.DataFrame(scan_data).sort_values(by="Quant Skor (0-100)", ascending=False)
 
-        # Filtreleme
-        if filter_option == "Sadece AL Sinyalleri 🟢":
+        if "Sadece GÜÇLÜ AL" in filter_option:
             display_df = scan_df[scan_df['_raw_side'] == "BUY"].drop(columns=['_raw_side'])
-        elif filter_option == "Sadece SAT Sinyalleri 🔴":
+        elif "Sadece GÜÇLÜ SAT" in filter_option:
             display_df = scan_df[scan_df['_raw_side'] == "SELL"].drop(columns=['_raw_side'])
         else:
             display_df = scan_df.drop(columns=['_raw_side'])
@@ -308,38 +487,74 @@ def main():
         if not display_df.empty:
             st.dataframe(display_df, use_container_width=True, hide_index=True)
         else:
-            st.warning("Seçilen filtre kriterine uygun hisse bulunamadı.")
+            st.info("Seçilen filtre kriterine uyan hisse bulunamadı.")
 
-    # --- SEKME 2: TEK HİSSE DETAYI ---
+    # --- TAB 2: BACKTEST SİMÜLASYONU ---
     with tab2:
-        selected_symbol = st.selectbox("İncelemek İstediğiniz Hisseyi Seçin:", options=cfg.BIST_WATCHLIST)
+        st.subheader("📊 Quant Stratejisinin 5 Yıllık Gerçekleşen Performans Simülasyonu")
+        bt_symbol = st.selectbox("Backtest Edilecek Hisseyi Seçin:", options=cfg.BIST_WATCHLIST, key="bt_select")
+        
+        raw_df = repo.load_data(bt_symbol)
+        if not raw_df.empty:
+            matrix_df = QuantitativeIndicatorEngine.compute_all_indicators(raw_df)
+            bt_results = backtest_engine.run_backtest(matrix_df, user_capital)
+
+            if bt_results:
+                m1, m2, m3, m4, m5 = st.columns(5)
+                m1.metric("Toplam Getiri (%)", f"%{bt_results['total_return']}")
+                m2.metric("Kazanma Oranı (Win Rate)", f"%{bt_results['win_rate']}")
+                m3.metric("Max Drawdown (Düşüş)", f"%{bt_results['max_drawdown']}")
+                m4.metric("Sharpe Oranı", bt_results['sharpe_ratio'])
+                m5.metric("Toplam İşlem", bt_results['total_trades'])
+
+                st.write("#### 📈 Portföy Büyüme Eğrisi (Equity Curve)")
+                fig_eq = go.Figure()
+                fig_eq.add_trace(go.Scatter(
+                    x=bt_results['equity_curve'].index, 
+                    y=bt_results['equity_curve']['capital'],
+                    mode='lines',
+                    name='Portföy Değeri (TL)',
+                    line=dict(color='#00CC96', width=2)
+                ))
+                fig_eq.update_layout(height=400, template="plotly_dark", xaxis_title="Tarih", yaxis_title="Sermaye (TL)")
+                st.plotly_chart(fig_eq, use_container_width=True)
+
+    # --- TAB 3: HİSSE ANALİZİ ---
+    with tab3:
+        st.subheader("📈 Derinlemesine İndikatör ve Mum Grafiği")
+        selected_symbol = st.selectbox("İncelemek İstediğiniz Hisseyi Seçin:", options=cfg.BIST_WATCHLIST, key="chart_select")
         clean_name = selected_symbol.replace('.IS', '')
         
         raw_df = repo.load_data(selected_symbol)
         if not raw_df.empty:
-            matrix_df = IndicatorEngine.compute_all_indicators(raw_df)
-            processed_df = sig_engine.process_signals(matrix_df)
+            matrix_df = QuantitativeIndicatorEngine.compute_all_indicators(raw_df)
+            scores, processed_df = score_engine.calculate_composite_score(matrix_df)
             last_row = processed_df.iloc[-1]
-            
             pivots = risk_engine.calculate_pivots(processed_df)
-            
-            st.write(f"### 📈 {clean_name} Grafik ve Pivot Seviyeleri")
-            
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Son Fiyat", f"{last_row['close']:.2f} ₺")
-            c2.metric("R1 Direnç", f"{pivots['R1']} ₺")
-            c3.metric("S1 Destek", f"{pivots['S1']} ₺")
-            c4.metric("RVOL", f"{last_row['ind_43_rvol']:.2f}")
 
-            recent_df = processed_df.tail(120)
-            fig = go.Figure()
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("Son Fiyat", f"{last_row['close']:.2f} ₺")
+            c2.metric("Quant Skor", f"{last_row['quant_score']} / 100")
+            c3.metric("R1 Direnç", f"{pivots['R1']} ₺")
+            c4.metric("S1 Destek", f"{pivots['S1']} ₺")
+            c5.metric("RVOL", f"{last_row['ind_36_rvol']:.2f}")
+
+            recent_df = processed_df.tail(150)
+            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
+
             fig.add_trace(go.Candlestick(
                 x=recent_df.index, open=recent_df['open'], high=recent_df['high'],
-                low=recent_df['low'], close=recent_df['close'], name=clean_name
-            ))
-            fig.add_hline(y=pivots['R1'], line_dash="dash", line_color="orange", annotation_text="R1 Direnç")
-            fig.add_hline(y=pivots['S1'], line_dash="dash", line_color="cyan", annotation_text="S1 Destek")
-            fig.update_layout(height=450, template="plotly_dark", xaxis_rangeslider_visible=False)
+                low=recent_df['low'], close=recent_df['close'], name="Fiyat"
+            ), row=1, col=1)
+
+            fig.add_trace(go.Scatter(x=recent_df.index, y=recent_df['ind_02_sma_20'], line=dict(color='yellow', width=1), name='SMA 20'), row=1, col=1)
+            fig.add_trace(go.Scatter(x=recent_df.index, y=recent_df['ind_03_sma_50'], line=dict(color='cyan', width=1), name='SMA 50'), row=1, col=1)
+
+            fig.add_trace(go.Scatter(x=recent_df.index, y=recent_df['quant_score'], line=dict(color='#AB63FA', width=2), name='Quant Score'), row=2, col=1)
+            fig.add_hline(y=65, line_dash="dash", line_color="green", row=2, col=1)
+            fig.add_hline(y=35, line_dash="dash", line_color="red", row=2, col=1)
+
+            fig.update_layout(height=600, template="plotly_dark", xaxis_rangeslider_visible=False)
             st.plotly_chart(fig, use_container_width=True)
 
 
