@@ -4,10 +4,11 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import datetime
 from concurrent.futures import ThreadPoolExecutor
 
+# ---------------------------------------------------------
 # 1. STREAMLIT SAYFA AYARI (İLK KOMUT OLMALI)
+# ---------------------------------------------------------
 st.set_page_config(
     page_title="BİST 100 Institutional Quant & SMC Engine",
     page_icon="⚡",
@@ -15,7 +16,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom Theme Styling
+# Custom Dark Theme
 st.markdown("""
 <style>
     .stApp {
@@ -32,20 +33,19 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# BİST 100 HİSSE LİSTESİ
+# BİST 100 HİSSE LİSTESİ (Güncel Semboller)
 BIST_100_STOCKS = [
     "AEFES.IS", "AGHOL.IS", "AHGAZ.IS", "AKBNK.IS", "AKCNS.IS", "AKFGY.IS", "AKSA.IS", "AKSEN.IS",
     "ALARK.IS", "ALBRK.IS", "ALFAS.IS", "ANSGR.IS", "ARCLK.IS", "ASELS.IS", "ASTOR.IS", "BERA.IS",
-    "BIENP.IS", "BIMAS.IS", "BOBET.IS", "BRSAN.IS", "BRYAT.IS", "BUCIM.IS", "CANTE.IS", "CCOLA.IS",
-    "CIMSA.IS", "CWENE.IS", "DOAS.IS", "DOHOL.IS", "EBEBK.IS", "ECILC.IS", "EGEEN.IS", "EKGYO.IS",
-    "ENJSA.IS", "ENKAI.IS", "EREGL.IS", "EUPWR.IS", "FROTO.IS", "GARAN.IS", "GESAN.IS", "GUBRF.IS",
-    "GWIND.IS", "HALKB.IS", "HEKTS.IS", "ISCTR.IS", "ISGYO.IS", "ISMEN.IS", "KCAER.IS", "KCHOL.IS",
-    "KLSER.IS", "KONTR.IS", "KORDS.IS", "KOZAA.IS", "KOZAL.IS", "KRDMD.IS", "MAVI.IS", "MHRGY.IS",
-    "MIATK.IS", "MGROS.IS", "ODAS.IS", "OTKAR.IS", "OYAKC.IS", "PASEU.IS", "PETKM.IS", "PGSUS.IS",
-    "QUAGR.IS", "REEDR.IS", "SAHOL.IS", "SASA.IS", "SDTTR.IS", "SISE.IS", "SKBNK.IS", "SOKM.IS",
-    "TABGD.IS", "TAVHL.IS", "TCELL.IS", "THYAO.IS", "TKFEN.IS", "TOASO.IS", "TSKB.IS", "TTKOM.IS",
-    "TTRAK.IS", "TUPRS.IS", "ULKER.IS", "VAKBN.IS", "VESBE.IS", "VESTL.IS", "YEOTK.IS", "YKBNK.IS",
-    "YYLGD.IS", "ZOREN.IS"
+    "BIMAS.IS", "BOBET.IS", "BRSAN.IS", "BRYAT.IS", "BUCIM.IS", "CANTE.IS", "CCOLA.IS", "CIMSA.IS",
+    "CWENE.IS", "DOAS.IS", "DOHOL.IS", "EBEBK.IS", "ECILC.IS", "EGEEN.IS", "EKGYO.IS", "ENJSA.IS",
+    "ENKAI.IS", "EREGL.IS", "EUPWR.IS", "FROTO.IS", "GARAN.IS", "GESAN.IS", "GUBRF.IS", "GWIND.IS",
+    "HALKB.IS", "HEKTS.IS", "ISCTR.IS", "ISGYO.IS", "ISMEN.IS", "KCAER.IS", "KCHOL.IS", "KLSER.IS",
+    "KONTR.IS", "KORDS.IS", "KOZAL.IS", "KRDMD.IS", "MAVI.IS", "MHRGY.IS", "MIATK.IS", "MGROS.IS",
+    "ODAS.IS", "OTKAR.IS", "OYAKC.IS", "PASEU.IS", "PETKM.IS", "PGSUS.IS", "QUAGR.IS", "REEDR.IS",
+    "SAHOL.IS", "SASA.IS", "SDTTR.IS", "SISE.IS", "SKBNK.IS", "SOKM.IS", "TABGD.IS", "TAVHL.IS",
+    "TCELL.IS", "THYAO.IS", "TKFEN.IS", "TOASO.IS", "TSKB.IS", "TTKOM.IS", "TTRAK.IS", "TUPRS.IS",
+    "ULKER.IS", "VAKBN.IS", "VESBE.IS", "VESTL.IS", "YEOTK.IS", "YKBNK.IS", "YYLGD.IS", "ZOREN.IS"
 ]
 
 # ---------------------------------------------------------
@@ -91,7 +91,7 @@ def calculate_indicators(df):
     df['RVOL'] = df['Volume'] / (df['Vol_SMA20'] + 1e-9)
     df['VWAP'] = (df['Volume'] * (df['High'] + df['Low'] + df['Close']) / 3).cumsum() / (df['Volume'].cumsum() + 1e-9)
     
-    # SMC Bileşenleri (FVG, BOS, OB)
+    # SMC Bileşenleri
     df['Bullish_FVG'] = (df['Low'] > df['High'].shift(2)) & ((df['Low'] - df['High'].shift(2)) > (df['ATR'] * 0.15))
     df['Swing_High'] = df['High'].rolling(window=5, center=True).max()
     df['BOS_Bullish'] = (df['Close'] > df['Swing_High'].shift(1)) & (df['Close'].shift(1) <= df['Swing_High'].shift(1))
@@ -117,7 +117,7 @@ def compute_score(df):
     if last['Close'] > last['EMA_20']: score += 10
     if last['EMA_20'] > last['EMA_50']: score += 10
     
-    # Osilatör & Momentum (Max 30)
+    # Momentum (Max 30)
     if 45 <= last['RSI'] <= 65: score += 15
     elif last['RSI'] < 35: score += 10
     if last['MACD'] > last['MACD_Signal']: score += 10
@@ -183,13 +183,13 @@ def run_backtest(df, score_threshold=65):
     return round(win_rate, 1), round(profit_factor, 2), len(trades)
 
 # ---------------------------------------------------------
-# 5. VERİ ÇEKME & CACHE
+# 5. GÜVENLİ VE CACHE'Lİ VERİ ÇEKME
 # ---------------------------------------------------------
 @st.cache_data(ttl=1800)
-def fetch_stock(symbol):
+def fetch_stock_data(symbol):
     try:
         ticker = yf.Ticker(symbol)
-        df = ticker.history(period="2y")
+        df = ticker.history(period="2y", auto_adjust=True)
         if df.empty or len(df) < 50:
             return symbol, None
         return symbol, df
@@ -197,12 +197,11 @@ def fetch_stock(symbol):
         return symbol, None
 
 # ---------------------------------------------------------
-# 6. ARAYÜZ VE UYGULAMA AKIŞI
+# 6. UYGULAMA ARAYÜZÜ VE TARAMA
 # ---------------------------------------------------------
 st.title("⚡ BİST 100 Multi-Faktör Tarama & Quant Paneli")
-st.caption("v33 Ultimate Motoru: Wilder Göstergeleri, SMC Yapıları ve Gelişmiş Risk Yönetimi")
+st.caption("v33 Ultimate Motoru: Wilder Göstergeleri, SMC Yapıları ve Risk Yönetimi")
 
-# Kontrol Paneli
 col1, col2 = st.columns([2, 1])
 with col1:
     filter_opt = st.radio(
@@ -223,54 +222,57 @@ if scan_btn or 'quant_data' not in st.session_state:
     
     total = len(BIST_100_STOCKS)
     
-    # RAM Aşımını Engellemek İçin max_workers=4
+    # Thread Safe Veri Çekme (max_workers=4 RAM dostudur)
     with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = [executor.submit(fetch_stock, s) for s in BIST_100_STOCKS]
+        futures = [executor.submit(fetch_stock_data, s) for s in BIST_100_STOCKS]
         
         for idx, future in enumerate(futures):
             progress.progress((idx + 1) / total)
-            status.text(f"Hisse verisi işleniyor... ({idx + 1}/{total})")
+            status.text(f"Hisse işleniyor... ({idx + 1}/{total})")
             
-            symbol, df = future.result()
-            if df is not None:
-                df = calculate_indicators(df)
-                score = compute_score(df)
-                win_rate, profit_factor, trade_count = run_backtest(df)
-                
-                last = df.iloc[-1]
-                close = last['Close']
-                atr = last['ATR'] if not np.isnan(last['ATR']) else close * 0.02
-                
-                if score >= 65: signal = "🟢 GÜÇLÜ AL"
-                elif score <= 35: signal = "🔴 GÜÇLÜ SAT"
-                else: signal = "⚪ NÖTR"
-                
-                stop_loss = round(close - (atr * 1.5), 2)
-                tp1 = round(close + (atr * 1.5), 2)
-                tp2 = round(close + (atr * 3.0), 2)
-                
-                risk_per_share = abs(close - stop_loss)
-                risk_amount = portfolio_size * 0.02
-                suggested_lot = int(risk_amount / risk_per_share) if risk_per_share > 0 else 1
-                suggested_lot = max(1, suggested_lot)
-                
-                results.append({
-                    "Hisse": symbol.replace(".IS", ""),
-                    "Sinyal": signal,
-                    "Quant Skor": score,
-                    "Son Fiyat": f"{close:.2f} ₺",
-                    "Stop Loss": f"{stop_loss:.2f} ₺",
-                    "TP1 Hedef": f"{tp1:.2f} ₺",
-                    "TP2 Hedef": f"{tp2:.2f} ₺",
-                    "Önerilen Lot": f"{suggested_lot} Lot",
-                    "RSI": round(last['RSI'], 1),
-                    "RVOL": round(last['RVOL'], 2),
-                    "WinRate (%)": win_rate,
-                    "Profit Factor": profit_factor,
-                    "İşlem Sayısı": trade_count,
-                    "raw_score": score,
-                    "df": df
-                })
+            try:
+                symbol, df = future.result()
+                if df is not None:
+                    df = calculate_indicators(df)
+                    score = compute_score(df)
+                    win_rate, profit_factor, trade_count = run_backtest(df)
+                    
+                    last = df.iloc[-1]
+                    close = last['Close']
+                    atr = last['ATR'] if not np.isnan(last['ATR']) else close * 0.02
+                    
+                    if score >= 65: signal = "🟢 GÜÇLÜ AL"
+                    elif score <= 35: signal = "🔴 GÜÇLÜ SAT"
+                    else: signal = "⚪ NÖTR"
+                    
+                    stop_loss = round(close - (atr * 1.5), 2)
+                    tp1 = round(close + (atr * 1.5), 2)
+                    tp2 = round(close + (atr * 3.0), 2)
+                    
+                    risk_per_share = abs(close - stop_loss)
+                    risk_amount = portfolio_size * 0.02
+                    suggested_lot = int(risk_amount / risk_per_share) if risk_per_share > 0 else 1
+                    suggested_lot = max(1, suggested_lot)
+                    
+                    results.append({
+                        "Hisse": symbol.replace(".IS", ""),
+                        "Sinyal": signal,
+                        "Quant Skor": score,
+                        "Son Fiyat": f"{close:.2f} ₺",
+                        "Stop Loss": f"{stop_loss:.2f} ₺",
+                        "TP1 Hedef": f"{tp1:.2f} ₺",
+                        "TP2 Hedef": f"{tp2:.2f} ₺",
+                        "Önerilen Lot": f"{suggested_lot} Lot",
+                        "RSI": round(last['RSI'], 1),
+                        "RVOL": round(last['RVOL'], 2),
+                        "WinRate (%)": win_rate,
+                        "Profit Factor": profit_factor,
+                        "İşlem Sayısı": trade_count,
+                        "raw_score": score,
+                        "df": df
+                    })
+            except Exception:
+                continue
                 
     status.empty()
     progress.empty()
