@@ -1,10 +1,10 @@
 """
 ================================================================================
-BİST 100 BORSA İSTANBUL QUANTITATIVE TRADING TERMINAL
+BİST 100 AUTOMATED QUANT SCANNER & BROKER TERMINAL
 ================================================================================
-- BİST 100 Canlı Veri Motoru (yfinance)
-- Türk Lirası (₺) Destek / Direnç, TP1/TP2 ve Stop-Loss
-- Sinyal Yıldız Skorlaması ve Interaktif Grafikler
+- Tüm BİST Watchlist Otomatik Sinyal Taraması (Sadece AL/SAT Verenler Tablosu)
+- Türk Lirası (₺) Tabanlı Stop-Loss, TP1/TP2 ve Lot Hesaplama
+- Tekli Hisse Detaylı Mum Grafiği ve Pivot Analizi
 ================================================================================
 """
 
@@ -22,7 +22,7 @@ import streamlit as st
 import yfinance as yf
 
 # Streamlit Ekran Düzeni
-st.set_page_config(page_title="BİST 100 Quant Terminal", layout="wide", page_icon="📈")
+st.set_page_config(page_title="BİST 100 Quant Scanner", layout="wide", page_icon="🚨")
 
 
 # ==============================================================================
@@ -35,11 +35,12 @@ class SignalType(Enum):
 
 
 class SystemConfig:
-    # Popüler BİST 100 Hisseleri (.IS uzantısı Borsa İstanbul'u temsil eder)
+    # Taranacak Popüler BİST 100 Hisseleri Listesi
     BIST_WATCHLIST = [
         'THYAO.IS', 'GARAN.IS', 'EREGL.IS', 'TUPRS.IS', 'ASELS.IS',
         'BIMAS.IS', 'AKBNK.IS', 'KCHOL.IS', 'SAHOL.IS', 'SISE.IS',
-        'YKBNK.IS', 'ISCTR.IS', 'HEKTS.IS', 'SASA.IS', 'PETKM.IS'
+        'YKBNK.IS', 'ISCTR.IS', 'HEKTS.IS', 'SASA.IS', 'PETKM.IS',
+        'KOZAL.IS', 'KORDS.IS', 'DOHOL.IS', 'ARCLK.IS', 'TOASO.IS'
     ]
     
     TIMEFRAME = '1d'            # 1 Günlük Mumlar
@@ -85,18 +86,9 @@ class DatabaseManager:
             ''')
             conn.commit()
 
-    def log_signal(self, symbol: str, signal_type: str, price: float, rvol: float, adx: float, atr: float, age: int) -> None:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO bist_signals (timestamp, symbol, signal_type, price, rvol, adx, atr, candle_age)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (datetime.utcnow().isoformat(), symbol, signal_type, price, rvol, adx, atr, age))
-            conn.commit()
-
 
 # ==============================================================================
-# 3. BİST 100 DATA REPOSITORY
+# 3. DATA REPOSITORY (YFINANCE)
 # ==============================================================================
 class BISTDataRepository:
     def __init__(self, config: SystemConfig):
@@ -153,7 +145,7 @@ class BISTDataRepository:
 
 
 # ==============================================================================
-# 4. INDICATOR ENGINE
+# 4. INDICATOR & SIGNAL ENGINE
 # ==============================================================================
 class IndicatorEngine:
     @classmethod
@@ -163,13 +155,6 @@ class IndicatorEngine:
         
         d['ind_01_sma_20'] = c.rolling(20).mean()
         d['ind_02_sma_50'] = c.rolling(50).mean()
-        d['ind_03_sma_200'] = c.rolling(200).mean()
-
-        delta = c.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        rs = gain / (loss + 1e-10)
-        d['ind_11_rsi_14'] = 100 - (100 / (1 + rs))
 
         tr0 = abs(h - l)
         tr1 = abs(h - c.shift(1))
@@ -194,16 +179,12 @@ class IndicatorEngine:
         return d
 
 
-# ==============================================================================
-# 5. SIGNAL ENGINE
-# ==============================================================================
 class SignalEngine:
     def __init__(self, config: SystemConfig):
         self.cfg = config
 
     def process_signals(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
-        
         rvol_pass = df['ind_43_rvol'] >= self.cfg.RVOL_THRESHOLD
         adx_pass = df['ind_40_adx_14'] >= self.cfg.ADX_THRESHOLD
 
@@ -241,9 +222,6 @@ class SignalEngine:
         return "⭐️" * max(1, min(score, 5))
 
 
-# ==============================================================================
-# 6. RISK & PIVOT ENGINE
-# ==============================================================================
 class RiskAndPivotEngine:
     def __init__(self, config: SystemConfig):
         self.cfg = config
@@ -281,115 +259,118 @@ class RiskAndPivotEngine:
             'SL': round(sl, 2),
             'TP1': round(tp1, 2),
             'TP2': round(tp2, 2),
-            'Risk_TL': round(risk_budget, 2),
             'Lot_Size': size,
             'Total_Value_TL': round(size * price, 2)
         }
 
 
 # ==============================================================================
-# 7. STREAMLIT BROKER DASHBOARD
+# 5. STREAMLIT SCANNER DASHBOARD
 # ==============================================================================
 def main():
     cfg = SystemConfig()
-    db = DatabaseManager(cfg.DB_FILE)
     repo = BISTDataRepository(cfg)
     sig_engine = SignalEngine(cfg)
     risk_engine = RiskAndPivotEngine(cfg)
 
-    # YAN MENÜ (HİSSE SEÇİMİ)
-    st.sidebar.title("🇹🇷 BİST 100 Terminali")
-    selected_symbol = st.sidebar.selectbox(
-        "Takip Edilecek BİST Hissesi Seçin:",
-        options=cfg.BIST_WATCHLIST,
-        index=0
-    )
-    
-    clean_name = selected_symbol.replace('.IS', '')
-    st.title(f"🎯 BİST 100 Quant Terminal: {clean_name}")
-    st.caption("Borsa İstanbul Canlı Analiz, Destek/Direnç & Kademeli Hedef Tahtası")
-    st.divider()
+    st.title("🚨 BİST 100 Quant Radar & Tarama Terminali")
+    st.caption("Tüm BİST 100 hisselerinin canlı taranması ve aktif sinyal listesi")
 
-    raw_df = repo.load_data(selected_symbol)
-    matrix_df = IndicatorEngine.compute_all_indicators(raw_df)
-    processed_df = sig_engine.process_signals(matrix_df)
-    last_row = processed_df.iloc[-1]
-    
-    side = "NONE"
-    age = -1
-    if last_row['is_bullish_valid']:
-        side = "BUY"
-        age = int(last_row['bullish_age'])
-    elif last_row['is_bearish_valid']:
-        side = "SELL"
-        age = int(last_row['bearish_age'])
+    tab1, tab2 = st.tabs(["🔥 Tüm AL Sinyalleri (Radar Tarama)", "📈 Tek Hisse Detayı & Grafikler"])
 
-    db.log_signal(selected_symbol, side, last_row['close'], last_row['ind_43_rvol'], last_row['ind_40_adx_14'], last_row['ind_27_atr_14'], age)
+    # --- SEKME 1: TÜM HİSSELERİN TARANMASI ---
+    with tab1:
+        st.subheader("📊 BİST 100 Canlı Sinyal Radar Tablosu")
+        
+        filter_option = st.radio("Filtrele:", ["Sadece AL Sinyalleri 🟢", "Sadece SAT Sinyalleri 🔴", "Tüm Hisseleri Göster ⚪"], horizontal=True)
 
-    stars = sig_engine.calculate_star_rating(last_row['ind_43_rvol'], last_row['ind_40_adx_14'])
-    pivots = risk_engine.calculate_pivots(processed_df)
-    targets = risk_engine.calculate_trade_targets(cfg.INITIAL_CAPITAL, last_row['close'], last_row['ind_27_atr_14'], side if side != "NONE" else "BUY")
+        if st.button("🔄 Radarı Şimdi Yeniden Tara"):
+            st.cache_data.clear()
 
-    # ÜST PANEL
-    c1, c2, c3 = st.columns([2, 2, 3])
-    
-    with c1:
-        st.subheader("🚦 Sinyal Statüsü")
-        if side == "BUY":
-            st.success(f"### 🟢 GÜÇLÜ AL SİNYALİ (Gün: {age})")
-        elif side == "SELL":
-            st.error(f"### 🔴 GÜÇLÜ SAT SİNYALİ (Gün: {age})")
+        scan_data = []
+        with st.spinner("BİST 100 Hisseleri Taranıyor..."):
+            for symbol in cfg.BIST_WATCHLIST:
+                clean_sym = symbol.replace('.IS', '')
+                raw_df = repo.load_data(symbol)
+                if raw_df.empty:
+                    continue
+                
+                matrix_df = IndicatorEngine.compute_all_indicators(raw_df)
+                processed_df = sig_engine.process_signals(matrix_df)
+                last = processed_df.iloc[-1]
+
+                side = "NONE"
+                age = "-"
+                if last['is_bullish_valid']:
+                    side = "BUY"
+                    age = f"{int(last['bullish_age'])} Gün"
+                elif last['is_bearish_valid']:
+                    side = "SELL"
+                    age = f"{int(last['bearish_age'])} Gün"
+
+                targets = risk_engine.calculate_trade_targets(cfg.INITIAL_CAPITAL, last['close'], last['ind_27_atr_14'], side if side != "NONE" else "BUY")
+                stars = sig_engine.calculate_star_rating(last['ind_43_rvol'], last['ind_40_adx_14'])
+
+                scan_data.append({
+                    "Hisse": clean_sym,
+                    "Sinyal": "🟢 GÜÇLÜ AL" if side == "BUY" else ("🔴 GÜÇLÜ SAT" if side == "SELL" else "⚪ NÖTR"),
+                    "Sinyal Yaşı": age,
+                    "Son Fiyat (TL)": f"{last['close']:.2f} ₺",
+                    "Stop Loss (SL)": f"{targets['SL']} ₺",
+                    "TP1 Hedef": f"{targets['TP1']} ₺",
+                    "TP2 Hedef": f"{targets['TP2']} ₺",
+                    "Önerilen Lot": f"{targets['Lot_Size']} Lot",
+                    "Hacim Gücü (RVOL)": round(last['ind_43_rvol'], 2),
+                    "Trend (ADX)": round(last['ind_40_adx_14'], 1),
+                    "Güven": stars,
+                    "_raw_side": side
+                })
+
+        scan_df = pd.DataFrame(scan_data)
+
+        # Filtreleme
+        if filter_option == "Sadece AL Sinyalleri 🟢":
+            display_df = scan_df[scan_df['_raw_side'] == "BUY"].drop(columns=['_raw_side'])
+        elif filter_option == "Sadece SAT Sinyalleri 🔴":
+            display_df = scan_df[scan_df['_raw_side'] == "SELL"].drop(columns=['_raw_side'])
         else:
-            st.info("### ⚪ NÖTR (Aktif Sinyal Yok)")
-        st.write(f"**Sinyal Güven Derecesi:** {stars}")
+            display_df = scan_df.drop(columns=['_raw_side'])
 
-    with c2:
-        st.subheader("🎖️ Strateji Rozeti")
-        st.warning("**🥇 BİST ALGO STRATEJİSİ**\n\nSharpe: 2.10 | Win Rate: %62.8")
-        st.write(f"**RVOL (Hacim Gücü):** {last_row['ind_43_rvol']:.2f} | **ADX (Trend):** {last_row['ind_40_adx_14']:.1f}")
+        if not display_df.empty:
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
+        else:
+            st.warning("Seçilen filtre kriterine uygun hisse bulunamadı.")
 
-    with c3:
-        st.subheader("📊 Pivot Destek & Direnç (TL)")
-        pc1, pc2 = st.columns(2)
-        with pc1:
-            st.markdown(f"**🔴 Direnç 2 (R2):** `{pivots['R2']} ₺`")
-            st.markdown(f"**🔴 Direnç 1 (R1):** `{pivots['R1']} ₺`")
-        with pc2:
-            st.markdown(f"**🟢 Destek 1 (S1):** `{pivots['S1']} ₺`")
-            st.markdown(f"**🟢 Destek 2 (S2):** `{pivots['S2']} ₺`")
+    # --- SEKME 2: TEK HİSSE DETAYI ---
+    with tab2:
+        selected_symbol = st.selectbox("İncelemek İstediğiniz Hisseyi Seçin:", options=cfg.BIST_WATCHLIST)
+        clean_name = selected_symbol.replace('.IS', '')
+        
+        raw_df = repo.load_data(selected_symbol)
+        matrix_df = IndicatorEngine.compute_all_indicators(raw_df)
+        processed_df = sig_engine.process_signals(matrix_df)
+        last_row = processed_df.iloc[-1]
+        
+        pivots = risk_engine.calculate_pivots(processed_df)
+        
+        st.write(f"### 📈 {clean_name} Grafik ve Pivot Seviyeleri")
+        
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Son Fiyat", f"{last_row['close']:.2f} ₺")
+        c2.metric("R1 Direnç", f"{pivots['R1']} ₺")
+        c3.metric("S1 Destek", f"{pivots['S1']} ₺")
+        c4.metric("RVOL", f"{last_row['ind_43_rvol']:.2f}")
 
-    st.divider()
-
-    # HEDEF TAHTASI KARTLARI
-    st.subheader(f"🎯 Hedef Tahtası & Lot Hesaplayıcı ({clean_name})")
-    t1, t2, t3, t4, t5 = st.columns(5)
-    t1.metric("📍 Giriş Fiyatı", f"{targets['Entry']} ₺")
-    t2.metric("🛡️ Stop Loss (SL)", f"{targets['SL']} ₺", delta_color="inverse")
-    t3.metric("🎯 TP1 (%50 Kapat)", f"{targets['TP1']} ₺")
-    t4.metric("🎯 TP2 (%100 Kapat)", f"{targets['TP2']} ₺")
-    t5.metric("📦 Alınacak Lot Adedi", f"{targets['Lot_Size']} Lot", delta=f"{targets['Total_Value_TL']:,} ₺")
-
-    st.divider()
-
-    # PLOTLY İNTERAKTİF GRAFİK
-    st.subheader(f"📈 {clean_name} Canlı Fiyat Grafiği ve Hedef Seviyeleri")
-    recent_df = processed_df.tail(120)
-    fig = go.Figure()
-    
-    fig.add_trace(go.Candlestick(
-        x=recent_df.index, open=recent_df['open'], high=recent_df['high'],
-        low=recent_df['low'], close=recent_df['close'], name=clean_name
-    ))
-    
-    if side != "NONE":
-        fig.add_hline(y=targets['TP2'], line_dash="dash", line_color="green", annotation_text="🎯 TP2 Hedef")
-        fig.add_hline(y=targets['TP1'], line_dash="dash", line_color="lightgreen", annotation_text="🎯 TP1 Hedef")
-        fig.add_hline(y=targets['SL'], line_dash="dash", line_color="red", annotation_text="🛡️ Stop Loss")
-
-    fig.add_hline(y=pivots['R1'], line_width=1, line_color="orange", annotation_text="R1 Direnç")
-    fig.add_hline(y=pivots['S1'], line_width=1, line_color="cyan", annotation_text="S1 Destek")
-    fig.update_layout(height=500, template="plotly_dark", xaxis_rangeslider_visible=False)
-    st.plotly_chart(fig, use_container_width=True)
+        recent_df = processed_df.tail(120)
+        fig = go.Figure()
+        fig.add_trace(go.Candlestick(
+            x=recent_df.index, open=recent_df['open'], high=recent_df['high'],
+            low=recent_df['low'], close=recent_df['close'], name=clean_name
+        ))
+        fig.add_hline(y=pivots['R1'], line_dash="dash", line_color="orange", annotation_text="R1 Direnç")
+        fig.add_hline(y=pivots['S1'], line_dash="dash", line_color="cyan", annotation_text="S1 Destek")
+        fig.update_layout(height=450, template="plotly_dark", xaxis_rangeslider_visible=False)
+        st.plotly_chart(fig, use_container_width=True)
 
 
 if __name__ == '__main__':
