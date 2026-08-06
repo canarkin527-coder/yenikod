@@ -114,7 +114,9 @@ def calculate_indicators(df):
     df['Bullish_FVG'] = (df['Low'] > df['High'].shift(2)) & (df['Close'].shift(1) > df['High'].shift(2))
     df['Swing_High'] = df['High'].rolling(window=5, center=True).max()
     df['BOS_Bullish'] = (df['Close'] > df['Swing_High'].shift(1)) & (df['Close'].shift(1) <= df['Swing_High'].shift(1))
-    df['Bullish_OB'] = (df['Close'].shift(2) < df['Open'].shift(2)) &                        (df['Close'].shift(1) > df['Open'].shift(1)) &                        (df['Close'] > df['High'].shift(2))
+    df['Bullish_OB'] = (df['Close'].shift(2) < df['Open'].shift(2)) & \
+                       (df['Close'].shift(1) > df['Open'].shift(1)) & \
+                       (df['Close'] > df['High'].shift(2))
                        
     return df
 
@@ -286,7 +288,6 @@ if rescan_btn or 'bist_quant_results' not in st.session_state:
                     signal = "⚪ NÖTR"
                 
                 # Risk calculation for Recommended Lot Size
-                # Standard risk: 2% risk of current portfolio per trade
                 risk_amount = portfolio_size * 0.02
                 stop_loss = round(close_price - (atr * 1.5), 2)
                 tp1 = round(close_price + (atr * 1.5), 2)
@@ -354,8 +355,15 @@ if results:
                 return 'color: #ff5252; font-weight: bold;'
             return 'color: #b0bec5;'
             
+        # Pandas versiyon uyumluluk kontrolü (.map vs .applymap)
+        styler = filtered_df[display_columns].style
+        if hasattr(styler, "map"):
+            styled_df = styler.map(style_signal, subset=['Quant Sinyal'])
+        else:
+            styled_df = styler.applymap(style_signal, subset=['Quant Sinyal'])
+
         st.dataframe(
-            filtered_df[display_columns].style.applymap(style_signal, subset=['Quant Sinyal']),
+            styled_df,
             use_container_width=True,
             height=500
         )
