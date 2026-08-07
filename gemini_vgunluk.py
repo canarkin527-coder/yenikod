@@ -65,7 +65,7 @@ BIST100_TICKERS = [
     "THYAO.IS", "ASELS.IS", "GARAN.IS", "KCHOL.IS", "EREGL.IS",
     "SAHOL.IS", "SISE.IS", "BIMAS.IS", "AKBNK.IS", "TUPRS.IS",
     "YKBNK.IS", "ISCTR.IS", "PGASUS.IS", "FROTO.IS", "TOASO.IS",
-    "PETKM.IS", "SASA.IS", "HEKTS.IS", "HEKTS.IS", "KONTR.IS"
+    "PETKM.IS", "SASA.IS", "HEKTS.IS", "KONTR.IS"
 ]
 
 # ==============================================================================
@@ -83,8 +83,6 @@ def compute_quant_score(df):
     score = 0
     close = df['Close']
     volume = df['Volume']
-    high = df['High']
-    low = df['Low']
     
     # 1. Trend & Hareketli Ortalamalar (EMA 20 / EMA 50)
     ema20 = close.ewm(span=20, adjust=False).mean()
@@ -97,7 +95,7 @@ def compute_quant_score(df):
     if curr_price > curr_ema20:
         score += 20
     if curr_ema20 > curr_ema50:
-        score += 15  # Altın Trend
+        score += 15  # Yükselen Trend
         
     # 2. RSI (14) Momentum
     delta = close.diff()
@@ -210,7 +208,6 @@ st.sidebar.write(f"**Nakit Bakiye:** {st.session_state.cash:,.2f} TL")
 
 total_port_val = st.session_state.cash
 for tkr, data in st.session_state.portfolio.items():
-    # Güncel fiyat çek
     try:
         cur_p = yf.Ticker(f"{tkr}.IS").fast_info['lastPrice']
     except:
@@ -230,7 +227,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
 ])
 
 # ------------------------------------------------------------------------------
-# TAB 1: CANLI QUANT RADAR (ÇİFT SÜZGEÇ)
+# TAB 1: CANLI QUANT RADAR (GÜVENLİ & HATA VERMEYEN YAPI)
 # ------------------------------------------------------------------------------
 with tab1:
     st.subheader("Bilanço Filtreli Quant Sinyal Radarı")
@@ -241,7 +238,11 @@ with tab1:
         
         for idx, ticker in enumerate(BIST100_TICKERS):
             clean_ticker = ticker.replace(".IS", "")
-            df_price = yf.download(ticker, period="6m", interval="1d", progress=False)
+            
+            try:
+                df_price = yf.download(ticker, period="6m", interval="1d", progress=False)
+            except Exception:
+                df_price = pd.DataFrame()
             
             if not df_price.empty:
                 if isinstance(df_price.columns, pd.MultiIndex):
@@ -271,24 +272,37 @@ with tab1:
                 })
             progress_bar.progress((idx + 1) / len(BIST100_TICKERS))
             
-        res_df = pd.DataFrame(results)
+        # GÜVENLİ DATAFRAME TANIMLAMA (KeyError Önleyici)
+        if results:
+            res_df = pd.DataFrame(results)
+        else:
+            res_df = pd.DataFrame(columns=[
+                "Hisse", "Fiyat (TL)", "Quant Skor (Teknik)", 
+                "Bilanço Skoru (Temel)", "RSI", "Göreceli Hacim (RVOL)", "Sinyal Durumu"
+            ])
         
         # Filtreleme
-        filtered_df = res_df[
-            (res_df["Bilanço Skoru (Temel)"] >= min_fund_score) &
-            (res_df["Quant Skor (Teknik)"] >= min_quant_score)
-        ].sort_values(by="Quant Skor (Teknik)", ascending=False)
+        if not res_df.empty:
+            filtered_df = res_df[
+                (res_df["Bilanço Skoru (Temel)"] >= min_fund_score) &
+                (res_df["Quant Skor (Teknik)"] >= min_quant_score)
+            ].sort_values(by="Quant Skor (Teknik)", ascending=False)
+        else:
+            filtered_df = res_df.copy()
         
-        st.dataframe(
-            filtered_df,
-            column_config={
-                "Quant Skor (Teknik)": st.column_config.ProgressColumn("Quant Skor", format="%d", min_value=0, max_value=100),
-                "Bilanço Skoru (Temel)": st.column_config.ProgressColumn("Bilanço Skoru", format="%d", min_value=0, max_value=100),
-                "Fiyat (TL)": st.column_config.NumberColumn(format="%.2f TL")
-            },
-            use_container_width=True,
-            hide_index=True
-        )
+        if not filtered_df.empty:
+            st.dataframe(
+                filtered_df,
+                column_config={
+                    "Quant Skor (Teknik)": st.column_config.ProgressColumn("Quant Skor", format="%d", min_value=0, max_value=100),
+                    "Bilanço Skoru (Temel)": st.column_config.ProgressColumn("Bilanço Skoru", format="%d", min_value=0, max_value=100),
+                    "Fiyat (TL)": st.column_config.NumberColumn(format="%.2f TL")
+                },
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.warning("⚠️ Belirlediğiniz süzgeç kriterlerine uygun hisse bulunamadı. Sol menüden filtre değerlerini esnetebilirsiniz.")
 
 # ------------------------------------------------------------------------------
 # TAB 2: BİLANÇO & FİNTABLES BENZERİ DETAYLI ANALİZ
@@ -308,7 +322,7 @@ with tab2:
             col3.metric("Özsermaye Kârlılığı (ROE)", f"%{round(info.get('returnOnEquity', 0)*100, 2)}")
             col4.metric("Firma Değeri / FAVÖK", round(info.get('enterpriseToEbitda', 0), 2))
         except:
-            st.warning("Veriler yfinance API üzerinden anlık çekilemedi.")
+            st.warning("Veriler anlık çekilemedi.")
             
         st.markdown("---")
         kap_url = f"https://www.kap.org.tr/tr/sirket-bilgileri/ozet/{selected_stock_f}"
@@ -360,7 +374,6 @@ with tab4:
         st.markdown("### 🛒 Hisse Al / Sat")
         trade_ticker = st.selectbox("Hisse Seç:", [t.replace(".IS", "") for t in BIST100_TICKERS], key="t_select")
         
-        # Son Fiyat Çek
         try:
             live_price = yf.Ticker(f"{trade_ticker}.IS").fast_info['lastPrice']
         except:
