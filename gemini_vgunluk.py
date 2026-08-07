@@ -197,10 +197,10 @@ def compute_fundamental_score(ticker_symbol):
 st.title("⚡ BİST 100 Quantamental Radar & Sanal Trading Lab")
 st.caption("Çift Süzgeçli Yapı: Sinyali bozmayan teknik Quant analizi ve temel Bilanço Kalite Skoru.")
 
-# Sidebar Kontrolleri
+# Sidebar Kontrolleri (Varsayılan eşikler daha esnek seviyelere çekildi)
 st.sidebar.header("🎯 Süzgeç Ayarları")
-min_fund_score = st.sidebar.slider("Minimum Bilanço Skoru", 0, 100, 50, help="Bu puanın altındaki şirketler elenir.")
-min_quant_score = st.sidebar.slider("Minimum Quant Skor (Teknik)", 0, 100, 60)
+min_fund_score = st.sidebar.slider("Minimum Bilanço Skoru", 0, 100, 30, help="Bu puanın altındaki şirketler elenir.")
+min_quant_score = st.sidebar.slider("Minimum Quant Skor (Teknik)", 0, 100, 40)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("💼 Portföy Özeti")
@@ -252,11 +252,11 @@ with tab1:
                 f_score = compute_fundamental_score(ticker)
                 
                 # Çift Süzgeç Sınıflandırması
-                if f_score >= 60 and q_score >= 70:
+                if f_score >= 50 and q_score >= 60:
                     status = "🚀 GÜÇLÜ AL (Sweet Spot)"
-                elif f_score < 50 and q_score >= 70:
+                elif f_score < 40 and q_score >= 60:
                     status = "⚠️ SPEKÜLATİF AL (Bilanço Zayıf)"
-                elif f_score >= 60 and q_score < 50:
+                elif f_score >= 50 and q_score < 40:
                     status = "👀 İZLEMEYE AL (Teknik Düzeltmede)"
                 else:
                     status = "❌ NÖTR / UZAK DUR"
@@ -290,6 +290,12 @@ with tab1:
         else:
             filtered_df = res_df.copy()
         
+        # Metrik Özetleri
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Taranan Hisse", len(BIST100_TICKERS))
+        m2.metric("Süzgeçten Geçen", len(filtered_df))
+        m3.metric("Güçlü Al Veren", len(res_df[res_df["Sinyal Durumu"].str.contains("GÜÇLÜ AL")]) if not res_df.empty else 0)
+
         if not filtered_df.empty:
             st.dataframe(
                 filtered_df,
@@ -302,7 +308,11 @@ with tab1:
                 hide_index=True
             )
         else:
-            st.warning("⚠️ Belirlediğiniz süzgeç kriterlerine uygun hisse bulunamadı. Sol menüden filtre değerlerini esnetebilirsiniz.")
+            st.warning("⚠️ Belirlediğiniz süzgeç kriterlerine uygun hisse bulunamadı. Sol menüden filtre değerlerini daha da düşürebilirsiniz.")
+
+        # Tüm Sonuçları Görme Opsiyonu
+        with st.expander("📋 Filtrelenmemiş Tüm Taranan Hisseleri Göster"):
+            st.dataframe(res_df, use_container_width=True, hide_index=True)
 
 # ------------------------------------------------------------------------------
 # TAB 2: BİLANÇO & FİNTABLES BENZERİ DETAYLI ANALİZ
