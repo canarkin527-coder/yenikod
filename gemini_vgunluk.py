@@ -280,16 +280,29 @@ if results:
     elif "GÜÇLÜ SAT" in filter_opt: 
         df_filtered = df_res[df_res['raw_score'] <= 35]
     elif "Makul Çarpanlı" in filter_opt:
-        df_filtered = df_res[(df_res['F/K'] < 12) & (df_res['PD/DD'] < 3.0)]
+        if 'F/K' in df_res.columns and 'PD/DD' in df_res.columns:
+            df_filtered = df_res[(df_res['F/K'] < 12) & (df_res['PD/DD'] < 3.0)]
+        else:
+            df_filtered = df_res
     else: 
         df_filtered = df_res
         
     df_filtered = df_filtered.sort_values(by="raw_score", ascending=False)
     
-    # TEMEL ÖZET METRİKLERİ (ÖZET KARTLAR)
-    avg_fk = df_res['F/K'].dropna().mean()
-    avg_pddd = df_res['PD_DD'].dropna().mean()
-    cheapest_stock = df_res.sort_values(by="F/K", ascending=True).iloc[0]['Hisse'] if not df_res.empty else "N/A"
+    # GÜVENLİ TEMEL ÖZET METRİKLERİ (KeyError Korumalı)
+    if not df_res.empty and 'F/K' in df_res.columns and 'PD/DD' in df_res.columns:
+        avg_fk = df_res['F/K'].dropna().mean()
+        avg_pddd = df_res['PD_DD'].dropna().mean()
+        
+        valid_fk_df = df_res.dropna(subset=['F/K'])
+        if not valid_fk_df.empty:
+            cheapest_stock = valid_fk_df.sort_values(by="F/K", ascending=True).iloc[0]['Hisse']
+        else:
+            cheapest_stock = "N/A"
+    else:
+        avg_fk = np.nan
+        avg_pddd = np.nan
+        cheapest_stock = "N/A"
     
     m_col1, m_col2, m_col3 = st.columns(3)
     m_col1.metric("BİST 100 Ort. F/K", f"{avg_fk:.2f}" if not np.isnan(avg_fk) else "N/A")
@@ -303,7 +316,8 @@ if results:
     
     with tab1:
         cols = ["Hisse", "Sinyal", "Quant Skor", "Son Fiyat", "F/K", "PD/DD", "FD/FAVÖK", "Piyasa Değeri (Milyar ₺)", "Stop Loss", "TP1 Hedef", "TP2 Hedef", "Önerilen Lot", "RSI", "RVOL"]
-        st.dataframe(df_filtered[cols], width="stretch", height=400)
+        valid_cols = [c for c in cols if c in df_filtered.columns]
+        st.dataframe(df_filtered[valid_cols], width="stretch", height=400)
         
         st.subheader("🛒 Hızlı Sanal Alım Yap")
         buy_col1, buy_col2, buy_col3, buy_col4 = st.columns(4)
@@ -320,7 +334,7 @@ if results:
                 custom_sl = st.number_input("Stop Loss (SL) ₺:", value=stock_info['Stop Loss Raw'])
                 
             total_cost = buy_lot * stock_info['Son Fiyat Raw']
-            st.caption(f"Maliyet: **{total_cost:,.2f} ₺** | F/K: **{stock_info['F/K']}** | PD/DD: **{stock_info['PD/DD']}** | Sanal Nakit: **{st.session_state['virtual_cash']:,.2f} ₺**")
+            st.caption(f"Maliyet: **{total_cost:,.2f} ₺** | F/K: **{stock_info.get('F/K', 'N/A')}** | PD/DD: **{stock_info.get('PD/DD', 'N/A')}** | Sanal Nakit: **{st.session_state['virtual_cash']:,.2f} ₺**")
             
             if st.button(f"🚀 {selected_buy_stock} Sanal Portföye Ekle"):
                 if total_cost <= st.session_state['virtual_cash']:
@@ -340,7 +354,9 @@ if results:
                     st.error("Yetersiz Sanal Bakiye!")
 
     with tab2:
-        st.dataframe(df_filtered[["Hisse", "Quant Skor", "WinRate (%)", "Profit Factor", "İşlem Sayısı", "F/K", "PD/DD"]], width="stretch")
+        bt_cols = ["Hisse", "Quant Skor", "WinRate (%)", "Profit Factor", "İşlem Sayısı", "F/K", "PD/DD"]
+        valid_bt_cols = [c for c in bt_cols if c in df_filtered.columns]
+        st.dataframe(df_filtered[valid_bt_cols], width="stretch")
         
     with tab3:
         selected_stock = st.selectbox("Hisse Seçin:", df_filtered['Hisse'].tolist(), key="chart_select")
@@ -448,3 +464,5 @@ if results:
             st.session_state['trade_history'] = []
             st.success("Sanal portföyün başarıyla sıfırlandı!")
             st.rerun()
+else:
+    st.warning("Veri taranamadı veya listede uygun hisse bulunamadı. Lütfen 'Radarı Çalıştır / Yenile' butonuna basarak tekrar deneyin.")
