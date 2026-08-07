@@ -3,465 +3,441 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import io
-import contextlib
-import warnings
 from datetime import datetime
 
-# Konsol uyarılarını gizle
-warnings.filterwarnings('ignore')
-
-# ---------------------------------------------------------
-# 1. STREAMLIT SAYFA AYARI & TEMA
-# ---------------------------------------------------------
+# ==============================================================================
+# 1. SAYFA YAPILANDIRMASI VE STİL (LIGHT THEME)
+# ==============================================================================
 st.set_page_config(
-    page_title="BİST 100 Quantamental & Paper Trading Engine",
-    page_icon="⚡",
+    page_title="BİST 100 Quantamental Engine & Trading Lab",
+    page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# MODERN AYDINLIK TEMA (LIGHT THEME)
+# Custom Light-Theme CSS & Modern UI Components
 st.markdown("""
-<style>
-    .stApp { background-color: #f8fafc; color: #0f172a; }
-    h1, h2, h3, h4, h5, h6, label, p, .stCaption { color: #0f172a !important; font-family: 'Inter', system-ui, sans-serif; }
-    section[data-testid="stSidebar"] { background-color: #ffffff !important; border-right: 1px solid #e2e8f0; }
-    .stButton>button { width: 100%; background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); color: #ffffff !important; font-weight: 600; border-radius: 8px; border: none; padding: 0.5rem 1rem; }
-    div[data-testid="stDataFrame"] { background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 6px; }
-    div[data-baseweb="input"], div[data-baseweb="select"] { background-color: #ffffff !important; border-radius: 8px !important; border: 1px solid #cbd5e1 !important; color: #0f172a !important; }
-    button[data-baseweb="tab"] { background-color: transparent; color: #64748b !important; font-weight: 600; }
-    button[data-baseweb="tab"][aria-selected="true"] { background-color: #ffffff !important; color: #2563eb !important; }
-</style>
+    <style>
+    .main {
+        background-color: #F8F9FA;
+        color: #212529;
+    }
+    .stMetric {
+        background-color: #FFFFFF;
+        padding: 15px;
+        border-radius: 10px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        border: 1px solid #E9ECEF;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 45px;
+        white-space: pre-wrap;
+        background-color: #FFFFFF;
+        border-radius: 8px;
+        color: #495057;
+        font-weight: 600;
+        border: 1px solid #DEE2E6;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #0D6EFD !important;
+        color: #FFFFFF !important;
+    }
+    </style>
 """, unsafe_allow_html=True)
 
-# ---------------------------------------------------------
-# SANAL PORTFÖY (SESSION STATE) İLKLENDİRME
-# ---------------------------------------------------------
-if 'virtual_cash' not in st.session_state:
-    st.session_state['virtual_cash'] = 100000.0  # Başlangıç sanal parası (100.000 TL)
+# ==============================================================================
+# 2. SESSION STATE (SANAL PORTFÖY / TRADING SIMULATION)
+# ==============================================================================
+if 'cash' not in st.session_state:
+    st.session_state.cash = 100000.0  # 100,000 TL Sanal Başlangıç Bakiyesi
 if 'portfolio' not in st.session_state:
-    st.session_state['portfolio'] = []  # [{hisse, lot, alis_fiyati, tp, sl, tarih}]
+    st.session_state.portfolio = {}  # {'THYAO': {'qty': 100, 'avg_price': 285.50}}
 if 'trade_history' not in st.session_state:
-    st.session_state['trade_history'] = []
+    st.session_state.trade_history = []
 
-# BİST 100 HİSSE LİSTESİ
-BIST_100_STOCKS = [
-    "AEFES.IS", "AGHOL.IS", "AHGAZ.IS", "AKBNK.IS", "AKCNS.IS", "AKFGY.IS", "AKSA.IS", "AKSEN.IS",
-    "ALARK.IS", "ALBRK.IS", "ALFAS.IS", "ANSGR.IS", "ARCLK.IS", "ASELS.IS", "ASTOR.IS", "BERA.IS",
-    "BIMAS.IS", "BOBET.IS", "BRSAN.IS", "BRYAT.IS", "BUCIM.IS", "CANTE.IS", "CCOLA.IS", "CIMSA.IS",
-    "CWENE.IS", "DOAS.IS", "DOHOL.IS", "EBEBK.IS", "ECILC.IS", "EGEEN.IS", "EKGYO.IS", "ENJSA.IS",
-    "ENKAI.IS", "EREGL.IS", "EUPWR.IS", "FROTO.IS", "GARAN.IS", "GESAN.IS", "GUBRF.IS", "GWIND.IS",
-    "HALKB.IS", "HEKTS.IS", "ISCTR.IS", "ISGYO.IS", "ISMEN.IS", "KCAER.IS", "KCHOL.IS", "KLSER.IS",
-    "KONTR.IS", "KORDS.IS", "KOZAL.IS", "KRDMD.IS", "MAVI.IS", "MHRGY.IS", "MIATK.IS", "MGROS.IS",
-    "ODAS.IS", "OTKAR.IS", "OYAKC.IS", "PASEU.IS", "PETKM.IS", "PGSUS.IS", "QUAGR.IS", "REEDR.IS",
-    "SAHOL.IS", "SASA.IS", "SDTTR.IS", "SISE.IS", "SKBNK.IS", "SOKM.IS", "TABGD.IS", "TAVHL.IS",
-    "TCELL.IS", "THYAO.IS", "TKFEN.IS", "TOASO.IS", "TSKB.IS", "TTKOM.IS", "TTRAK.IS", "TUPRS.IS",
-    "ULKER.IS", "VAKBN.IS", "VESBE.IS", "VESTL.IS", "YEOTK.IS", "YKBNK.IS", "YYLGD.IS", "ZOREN.IS"
+# ==============================================================================
+# 3. BİST 100 HİSSE EVRENİ
+# ==============================================================================
+BIST100_TICKERS = [
+    "THYAO.IS", "ASELS.IS", "GARAN.IS", "KCHOL.IS", "EREGL.IS",
+    "SAHOL.IS", "SISE.IS", "BIMAS.IS", "AKBNK.IS", "TUPRS.IS",
+    "YKBNK.IS", "ISCTR.IS", "PGASUS.IS", "FROTO.IS", "TOASO.IS",
+    "PETKM.IS", "SASA.IS", "HEKTS.IS", "HEKTS.IS", "KONTR.IS"
 ]
 
-# ---------------------------------------------------------
-# 2. İNDİKATÖR VE SMC HESAPLAMA MOTORU
-# ---------------------------------------------------------
-def calculate_wilder_rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = -delta.where(delta < 0, 0.0)
-    avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
-    rs = avg_gain / (avg_loss + 1e-12)
-    return 100.0 - (100.0 / (1.0 + rs))
-
-def calculate_wilder_atr(df, period=14):
-    high_low = df['High'] - df['Low']
-    high_close = np.abs(df['High'] - df['Close'].shift(1))
-    low_close = np.abs(df['Low'] - df['Close'].shift(1))
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    return tr.ewm(alpha=1/period, adjust=False).mean()
-
-def calculate_indicators(df):
-    df = df.copy()
-    df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
-    df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
-    df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
-    df['RSI'] = calculate_wilder_rsi(df['Close'], 14)
-    df['ATR'] = calculate_wilder_atr(df, 14)
+# ==============================================================================
+# 4. TEKNİK QUANT SKORLAMA (SAF MATEMATİKSEL İNDİKATÖRLER)
+# ==============================================================================
+def compute_quant_score(df):
+    """
+    Sadece Fiyat ve Hacim hareketlerine bakar.
+    Bilanço veya dış gürültü verisiyle KİRLETİLMEMİŞTİR.
+    0-100 arası teknik momentum/trend skoru üretir.
+    """
+    if df is None or len(df) < 50:
+        return 50, 0, 0, 0, "Yetersiz Veri"
     
-    ema12 = df['Close'].ewm(span=12, adjust=False).mean()
-    ema26 = df['Close'].ewm(span=26, adjust=False).mean()
-    df['MACD'] = ema12 - ema26
-    df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-    df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
-    
-    df['Vol_SMA20'] = df['Volume'].rolling(20).mean()
-    df['RVOL'] = df['Volume'] / (df['Vol_SMA20'] + 1e-9)
-    df['VWAP'] = (df['Volume'] * (df['High'] + df['Low'] + df['Close']) / 3).cumsum() / (df['Volume'].cumsum() + 1e-9)
-    
-    df['Bullish_FVG'] = (df['Low'] > df['High'].shift(2)) & ((df['Low'] - df['High'].shift(2)) > (df['ATR'] * 0.15))
-    df['Swing_High'] = df['High'].rolling(window=5, center=True).max()
-    df['BOS_Bullish'] = (df['Close'] > df['Swing_High'].shift(1)) & (df['Close'].shift(1) <= df['Swing_High'].shift(1))
-    displacement = (df['Close'] - df['Open']).abs() > (df['ATR'] * 1.1)
-    df['Bullish_OB'] = (df['Close'].shift(1) < df['Open'].shift(1)) & displacement & (df['Close'] > df['High'].shift(1))
-    
-    return df
-
-def compute_score(df):
-    if len(df) < 50: return 0.0
-    last, prev = df.iloc[-1], df.iloc[-2]
     score = 0
-    if last['Close'] > last['EMA_200']: score += 15
-    if last['Close'] > last['EMA_20']: score += 10
-    if last['EMA_20'] > last['EMA_50']: score += 10
-    if 45 <= last['RSI'] <= 65: score += 15
-    elif last['RSI'] < 35: score += 10
-    if last['MACD'] > last['MACD_Signal']: score += 10
-    if last['MACD_Hist'] > prev['MACD_Hist']: score += 5
-    if last['RVOL'] > 1.5: score += 10
-    elif last['RVOL'] > 1.0: score += 5
-    if last['Close'] > last['VWAP']: score += 5
-    if last['Bullish_FVG']: score += 10
-    if last['BOS_Bullish']: score += 5
-    if last['Bullish_OB']: score += 5
-    return float(round(score, 1))
+    close = df['Close']
+    volume = df['Volume']
+    high = df['High']
+    low = df['Low']
+    
+    # 1. Trend & Hareketli Ortalamalar (EMA 20 / EMA 50)
+    ema20 = close.ewm(span=20, adjust=False).mean()
+    ema50 = close.ewm(span=50, adjust=False).mean()
+    
+    curr_price = close.iloc[-1]
+    curr_ema20 = ema20.iloc[-1]
+    curr_ema50 = ema50.iloc[-1]
+    
+    if curr_price > curr_ema20:
+        score += 20
+    if curr_ema20 > curr_ema50:
+        score += 15  # Altın Trend
+        
+    # 2. RSI (14) Momentum
+    delta = close.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / (loss + 1e-9)
+    rsi = 100 - (100 / (1 + rs))
+    curr_rsi = rsi.iloc[-1]
+    
+    if 40 <= curr_rsi <= 65:
+        score += 25  # İdeal ivme bölgesi
+    elif 30 <= curr_rsi < 40:
+        score += 15  # Dip Dönüş Potansiyeli
+    elif curr_rsi > 70:
+        score += 5   # Doygunluk riski
+        
+    # 3. Göreceli Hacim (RVOL - Relative Volume)
+    avg_vol_20 = volume.rolling(20).mean().iloc[-1]
+    curr_vol = volume.iloc[-1]
+    rvol = curr_vol / (avg_vol_20 + 1e-9)
+    
+    if rvol >= 1.5:
+        score += 25  # Güçlü Para Girişi
+    elif rvol >= 1.0:
+        score += 15
+        
+    # 4. MACD Kesişimi
+    exp1 = close.ewm(span=12, adjust=False).mean()
+    exp2 = close.ewm(span=26, adjust=False).mean()
+    macd = exp1 - exp2
+    signal = macd.ewm(span=9, adjust=False).mean()
+    
+    if macd.iloc[-1] > signal.iloc[-1]:
+        score += 15
+        
+    return score, round(curr_rsi, 1), round(rvol, 2), round(curr_price, 2), "BAŞARILI"
 
-def run_backtest(df, score_threshold=65):
-    trades, in_trade, entry_price, sl, tp = [], False, 0.0, 0.0, 0.0
-    for i in range(50, len(df) - 1):
-        sub_df = df.iloc[:i+1]
-        score = compute_score(sub_df)
-        next_open = df.iloc[i+1]['Open']
-        if not in_trade:
-            if score >= score_threshold:
-                in_trade = True
-                entry_price = next_open
-                atr = sub_df.iloc[-1]['ATR']
-                if np.isnan(atr) or atr == 0: atr = entry_price * 0.02
-                sl, tp = entry_price - (atr * 1.5), entry_price + (atr * 3.0)
-        else:
-            next_low, next_high = df.iloc[i+1]['Low'], df.iloc[i+1]['High']
-            if next_low <= sl:
-                trades.append((sl - entry_price) / entry_price)
-                in_trade = False
-            elif next_high >= tp:
-                trades.append((tp - entry_price) / entry_price)
-                in_trade = False
-    if not trades: return 0.0, 0.0, 0
-    wins = [t for t in trades if t > 0]
-    losses = [t for t in trades if t <= 0]
-    win_rate = (len(wins) / len(trades)) * 100.0
-    profit_factor = sum(wins) / (abs(sum(losses)) if sum(losses) != 0 else 1e-9)
-    return round(win_rate, 1), round(profit_factor, 2), len(trades)
-
-# ---------------------------------------------------------
-# 3. VERİ VE TEMEL ANALİZ ÇEKME MOTORU
-# ---------------------------------------------------------
-@st.cache_data(ttl=900)
-def fetch_all_stocks_data(symbols):
-    all_data, chunk_size = [], 15
-    chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
-    f = io.StringIO()
-    with contextlib.redirect_stderr(f), contextlib.redirect_stdout(f):
-        for chunk in chunks:
-            try:
-                data = yf.download(tickers=chunk, period="2y", group_by='ticker', auto_adjust=True, progress=False, threads=False, timeout=3)
-                if data is not None and not data.empty: all_data.append(data)
-            except Exception: continue
-    if not all_data: return None
-    try: return pd.concat(all_data, axis=1)
-    except Exception: return None
-
-@st.cache_data(ttl=3600)
-def fetch_fundamental_data(symbol):
+# ==============================================================================
+# 5. TEMEL BİLANÇO SKORLAMA (BAĞIMSIZ FİNANSAL SAĞLIK)
+# ==============================================================================
+@st.cache_data(ttl=86400)
+def compute_fundamental_score(ticker_symbol):
+    """
+    Sadece Bilanço, Gelir Tablosu ve Nakit Akışına bakar.
+    Teknik indikatörleri etkilemeden 0-100 arası Bilanço Kalite Skoru verir.
+    """
+    score = 0
     try:
-        ticker = yf.Ticker(symbol)
-        info = ticker.info
-        
-        pe_ratio = info.get('trailingPE', None)
-        pb_ratio = info.get('priceToBook', None)
-        ev_ebitda = info.get('enterpriseToEbitda', None)
-        market_cap = info.get('marketCap', None)
-        
-        market_cap_m = round(market_cap / 1e9, 2) if market_cap else np.nan
-        
-        return {
-            "FK": round(pe_ratio, 2) if pe_ratio and pe_ratio > 0 else np.nan,
-            "PD_DD": round(pb_ratio, 2) if pb_ratio and pb_ratio > 0 else np.nan,
-            "FD_FAVOK": round(ev_ebitda, 2) if ev_ebitda and ev_ebitda > 0 else np.nan,
-            "Piyasa_Degeri_Milyar": market_cap_m
-        }
+        stock = yf.Ticker(ticker_symbol)
+        financials = stock.financials
+        balance_sheet = stock.balance_sheet
+        cashflow = stock.cashflow
+
+        if financials.empty or balance_sheet.empty:
+            return 50  # Veri eksikse nötr puan
+
+        # A. Kârlılık ve Büyüme (40 Puan)
+        if 'Net Income' in financials.index:
+            net_inc = financials.loc['Net Income']
+            if len(net_inc) >= 2:
+                if net_inc.iloc[0] > net_inc.iloc[1]:
+                    score += 20  # Yıllık Kâr Büyümesi
+                if net_inc.iloc[0] > 0:
+                    score += 10  # Pozitif Net Kâr
+                    
+        if 'Operating Cash Flow' in cashflow.index:
+            op_cf = cashflow.loc['Operating Cash Flow'].iloc[0]
+            if op_cf > 0:
+                score += 10  # Operasyonel Nakit Üretimi Var
+
+        # B. Borçluluk ve Sağlık (30 Puan)
+        if 'Total Stockholder Equity' in balance_sheet.index and 'Total Debt' in balance_sheet.index:
+            equity = balance_sheet.loc['Total Stockholder Equity'].iloc[0]
+            debt = balance_sheet.loc['Total Debt'].iloc[0]
+            if equity > 0 and (debt / equity) < 1.5:
+                score += 15  # Borç Yükü Güvenli
+                
+        if 'Total Current Assets' in balance_sheet.index and 'Total Current Liabilities' in balance_sheet.index:
+            curr_assets = balance_sheet.loc['Total Current Assets'].iloc[0]
+            curr_liab = balance_sheet.loc['Total Current Liabilities'].iloc[0]
+            if curr_liab > 0 and (curr_assets / curr_liab) > 1.2:
+                score += 15  # Cari Oran Güçlü (Likit)
+
+        # C. Kâr Kalitesi (30 Puan)
+        if 'Net Income' in financials.index and 'Operating Cash Flow' in cashflow.index:
+            if cashflow.loc['Operating Cash Flow'].iloc[0] >= financials.loc['Net Income'].iloc[0]:
+                score += 30  # Kasaya giren nakit net kârdan yüksek
+            else:
+                score += 15
+
     except Exception:
-        return {"FK": np.nan, "PD_DD": np.nan, "FD_FAVOK": np.nan, "Piyasa_Degeri_Milyar": np.nan}
+        return 50
 
-# ---------------------------------------------------------
-# 4. ARAYÜZ VE TARAMA
-# ---------------------------------------------------------
-st.title("⚡ BİST 100 Quantamental Radar & Paper Trading")
+    return min(score, 100)
 
-col1, col2 = st.columns([2, 1])
-with col1:
-    # 🔑 KEY PARAMETRESİ EKLENEREK BENZERSİZ KILINDI
-    filter_opt = st.radio(
-        "Filtrele:", 
-        [
-            "Tüm Liste", 
-            "Sadece GÜÇLÜ AL 🟢 (Skor ≥ 65)", 
-            "Sadece GÜÇLÜ SAT 🔴 (Skor ≤ 35)",
-            "Makul Çarpanlı / Ucuz Hisseler 🏷️ (F/K < 12 & PD/DD < 3)"
-        ], 
-        horizontal=True,
-        key="main_filter_radio"
-    )
-with col2:
-    portfolio_size = st.number_input("Risk Hesabı Portföy Büyüklüğü (TL):", value=100000.0, step=5000.0, key="risk_portfolio_input")
+# ==============================================================================
+# 6. ARAYÜZ BAŞLIĞI VE SÜZGEÇ KONTROLLERİ
+# ==============================================================================
+st.title("⚡ BİST 100 Quantamental Radar & Sanal Trading Lab")
+st.caption("Çift Süzgeçli Yapı: Sinyali bozmayan teknik Quant analizi ve temel Bilanço Kalite Skoru.")
 
-scan_btn = st.button("🔄 Radarı Çalıştır / Yenile", key="scan_radar_btn")
+# Sidebar Kontrolleri
+st.sidebar.header("🎯 Süzgeç Ayarları")
+min_fund_score = st.sidebar.slider("Minimum Bilanço Skoru", 0, 100, 50, help="Bu puanın altındaki şirketler elenir.")
+min_quant_score = st.sidebar.slider("Minimum Quant Skor (Teknik)", 0, 100, 60)
 
-if scan_btn or 'quant_data' not in st.session_state:
-    results = []
-    status = st.empty()
-    status.info("BİST 100 verileri ve Fintables temel çarpanları çekiliyor...")
-    batch_data = fetch_all_stocks_data(BIST_100_STOCKS)
+st.sidebar.markdown("---")
+st.sidebar.subheader("💼 Portföy Özeti")
+st.sidebar.write(f"**Nakit Bakiye:** {st.session_state.cash:,.2f} TL")
+
+total_port_val = st.session_state.cash
+for tkr, data in st.session_state.portfolio.items():
+    # Güncel fiyat çek
+    try:
+        cur_p = yf.Ticker(f"{tkr}.IS").fast_info['lastPrice']
+    except:
+        cur_p = data['avg_price']
+    total_port_val += data['qty'] * cur_p
+
+st.sidebar.write(f"**Toplam Portföy Değeri:** {total_port_val:,.2f} TL")
+
+# ==============================================================================
+# 7. TABLI ARAYÜZ (4 ANA SEKMEMİZ)
+# ==============================================================================
+tab1, tab2, tab3, tab4 = st.tabs([
+    "🔍 Tablo 1: Canlı Quant Radar", 
+    "📊 Tablo 2: Bilanço & Fintables Analizi", 
+    "📈 Tablo 3: İnteraktif Grafik & İndikatörler", 
+    "💸 Tablo 4: Sanal Trading Simülasyonu"
+])
+
+# ------------------------------------------------------------------------------
+# TAB 1: CANLI QUANT RADAR (ÇİFT SÜZGEÇ)
+# ------------------------------------------------------------------------------
+with tab1:
+    st.subheader("Bilanço Filtreli Quant Sinyal Radarı")
     
-    if batch_data is not None:
-        for symbol in BIST_100_STOCKS:
-            try:
-                df = batch_data[symbol].dropna(how='all') if symbol in batch_data.columns.levels[0] else None
-                if df is None or df.empty or len(df) < 50: continue
-                
-                df = df.dropna(subset=['Close', 'High', 'Low', 'Open', 'Volume'])
-                df = calculate_indicators(df)
-                score = compute_score(df)
-                win_rate, profit_factor, trade_count = run_backtest(df)
-                
-                fund_data = fetch_fundamental_data(symbol)
-                
-                last = df.iloc[-1]
-                close, atr = last['Close'], last['ATR'] if not np.isnan(last['ATR']) else last['Close'] * 0.02
-                signal = "🟢 GÜÇLÜ AL" if score >= 65 else ("🔴 GÜÇLÜ SAT" if score <= 35 else "⚪ NÖTR")
-                stop_loss, tp1, tp2 = round(close - (atr * 1.5), 2), round(close + (atr * 1.5), 2), round(close + (atr * 3.0), 2)
-                
-                risk_per_share = abs(close - stop_loss)
-                suggested_lot = max(1, int((portfolio_size * 0.02) / risk_per_share)) if risk_per_share > 0 else 1
-                
-                results.append({
-                    "Hisse": symbol.replace(".IS", ""),
-                    "Sinyal": signal,
-                    "Quant Skor": score,
-                    "Son Fiyat Raw": close,
-                    "Son Fiyat": f"{close:.2f} ₺",
-                    "F/K": fund_data["FK"],
-                    "PD/DD": fund_data["PD_DD"],
-                    "FD/FAVÖK": fund_data["FD_FAVOK"],
-                    "Piyasa Değeri (Milyar ₺)": fund_data["Piyasa_Degeri_Milyar"],
-                    "Stop Loss Raw": stop_loss,
-                    "Stop Loss": f"{stop_loss:.2f} ₺",
-                    "TP1 Raw": tp1,
-                    "TP1 Hedef": f"{tp1:.2f} ₺",
-                    "TP2 Raw": tp2,
-                    "TP2 Hedef": f"{tp2:.2f} ₺",
-                    "Önerilen Lot": suggested_lot,
-                    "RSI": round(last['RSI'], 1),
-                    "RVOL": round(last['RVOL'], 2),
-                    "WinRate (%)": win_rate,
-                    "Profit Factor": profit_factor,
-                    "İşlem Sayısı": trade_count,
-                    "raw_score": score,
-                    "df": df
-                })
-            except Exception: continue
-    status.empty()
-    st.session_state['quant_data'] = results
-
-results = st.session_state.get('quant_data', [])
-
-if results:
-    df_res = pd.DataFrame(results)
-    
-    # Filtreleme Mantığı
-    if "GÜÇLÜ AL" in filter_opt: 
-        df_filtered = df_res[df_res['raw_score'] >= 65]
-    elif "GÜÇLÜ SAT" in filter_opt: 
-        df_filtered = df_res[df_res['raw_score'] <= 35]
-    elif "Makul Çarpanlı" in filter_opt:
-        if 'F/K' in df_res.columns and 'PD/DD' in df_res.columns:
-            df_filtered = df_res[(df_res['F/K'] < 12) & (df_res['PD/DD'] < 3.0)]
-        else:
-            df_filtered = df_res
-    else: 
-        df_filtered = df_res
+    if st.button("🚀 Radarı Taramaya Başla"):
+        results = []
+        progress_bar = st.progress(0)
         
-    df_filtered = df_filtered.sort_values(by="raw_score", ascending=False)
-    
-    # METRİK BÖLÜMÜ
-    if not df_res.empty and 'F/K' in df_res.columns and 'PD/DD' in df_res.columns:
-        avg_fk = df_res['F/K'].dropna().mean()
-        avg_pddd = df_res['PD/DD'].dropna().mean()
-        
-        valid_fk_df = df_res.dropna(subset=['F/K'])
-        if not valid_fk_df.empty:
-            cheapest_stock = valid_fk_df.sort_values(by="F/K", ascending=True).iloc[0]['Hisse']
-        else:
-            cheapest_stock = "N/A"
-    else:
-        avg_fk = np.nan
-        avg_pddd = np.nan
-        cheapest_stock = "N/A"
-    
-    m_col1, m_col2, m_col3 = st.columns(3)
-    m_col1.metric("BİST 100 Ort. F/K", f"{avg_fk:.2f}" if not np.isnan(avg_fk) else "N/A")
-    m_col2.metric("BİST 100 Ort. PD/DD", f"{avg_pddd:.2f}" if not np.isnan(avg_pddd) else "N/A")
-    m_col3.metric("En Düşük F/K'lı Hisse", cheapest_stock)
-    
-    st.markdown("---")
-    
-    # 4 SEKME
-    tab1, tab2, tab3, tab4 = st.tabs(["🔥 Canlı Radar (Quant + Temel)", "📊 Backtest Sonuçları", "📈 Grafik Analizi", "💼 Sanal Portföy (Paper Trading)"])
-    
-    with tab1:
-        cols = ["Hisse", "Sinyal", "Quant Skor", "Son Fiyat", "F/K", "PD/DD", "FD/FAVÖK", "Piyasa Değeri (Milyar ₺)", "Stop Loss", "TP1 Hedef", "TP2 Hedef", "Önerilen Lot", "RSI", "RVOL"]
-        valid_cols = [c for c in cols if c in df_filtered.columns]
-        st.dataframe(df_filtered[valid_cols], width="stretch", height=400)
-        
-        st.subheader("🛒 Hızlı Sanal Alım Yap")
-        buy_col1, buy_col2, buy_col3, buy_col4 = st.columns(4)
-        with buy_col1:
-            selected_buy_stock = st.selectbox("Alınacak Hisse:", df_filtered['Hisse'].tolist(), key="buy_stock_select")
-        stock_info = next((item for item in results if item["Hisse"] == selected_buy_stock), None)
-        
-        if stock_info:
-            with buy_col2:
-                buy_lot = st.number_input("Lot Miktarı:", min_value=1, value=stock_info['Önerilen Lot'], key="buy_lot_input")
-            with buy_col3:
-                custom_tp = st.number_input("Satış Hedef (TP) ₺:", value=stock_info['TP2 Raw'], key="buy_tp_input")
-            with buy_col4:
-                custom_sl = st.number_input("Stop Loss (SL) ₺:", value=stock_info['Stop Loss Raw'], key="buy_sl_input")
-                
-            total_cost = buy_lot * stock_info['Son Fiyat Raw']
-            st.caption(f"Maliyet: **{total_cost:,.2f} ₺** | F/K: **{stock_info.get('F/K', 'N/A')}** | PD/DD: **{stock_info.get('PD/DD', 'N/A')}** | Sanal Nakit: **{st.session_state['virtual_cash']:,.2f} ₺**")
+        for idx, ticker in enumerate(BIST100_TICKERS):
+            clean_ticker = ticker.replace(".IS", "")
+            df_price = yf.download(ticker, period="6m", interval="1d", progress=False)
             
-            if st.button(f"🚀 {selected_buy_stock} Sanal Portföye Ekle", key="add_to_portfolio_btn"):
-                if total_cost <= st.session_state['virtual_cash']:
-                    st.session_state['virtual_cash'] -= total_cost
-                    st.session_state['portfolio'].append({
-                        "Hisse": selected_buy_stock,
-                        "Lot": buy_lot,
-                        "Alis_Fiyati": stock_info['Son Fiyat Raw'],
-                        "Guncel_Fiyat": stock_info['Son Fiyat Raw'],
-                        "TP": custom_tp,
-                        "SL": custom_sl,
-                        "Tarih": datetime.now().strftime("%Y-%m-%d %H:%M")
-                    })
-                    st.success(f"{selected_buy_stock} hissesinden {buy_lot} Lot alındı!")
-                    st.rerun()
+            if not df_price.empty:
+                if isinstance(df_price.columns, pd.MultiIndex):
+                    df_price.columns = df_price.columns.get_level_values(0)
+
+                q_score, rsi, rvol, price, status_code = compute_quant_score(df_price)
+                f_score = compute_fundamental_score(ticker)
+                
+                # Çift Süzgeç Sınıflandırması
+                if f_score >= 60 and q_score >= 70:
+                    status = "🚀 GÜÇLÜ AL (Sweet Spot)"
+                elif f_score < 50 and q_score >= 70:
+                    status = "⚠️ SPEKÜLATİF AL (Bilanço Zayıf)"
+                elif f_score >= 60 and q_score < 50:
+                    status = "👀 İZLEMEYE AL (Teknik Düzeltmede)"
                 else:
-                    st.error("Yetersiz Sanal Bakiye!")
+                    status = "❌ NÖTR / UZAK DUR"
 
-    with tab2:
-        bt_cols = ["Hisse", "Quant Skor", "WinRate (%)", "Profit Factor", "İşlem Sayısı", "F/K", "PD/DD"]
-        valid_bt_cols = [c for c in bt_cols if c in df_filtered.columns]
-        st.dataframe(df_filtered[valid_bt_cols], width="stretch")
+                results.append({
+                    "Hisse": clean_ticker,
+                    "Fiyat (TL)": price,
+                    "Quant Skor (Teknik)": q_score,
+                    "Bilanço Skoru (Temel)": f_score,
+                    "RSI": rsi,
+                    "Göreceli Hacim (RVOL)": rvol,
+                    "Sinyal Durumu": status
+                })
+            progress_bar.progress((idx + 1) / len(BIST100_TICKERS))
+            
+        res_df = pd.DataFrame(results)
         
-    with tab3:
-        selected_stock = st.selectbox("Hisse Seçin:", df_filtered['Hisse'].tolist(), key="chart_stock_select")
-        stock_data = next((item for item in results if item["Hisse"] == selected_stock), None)
-        if stock_data:
-            df_chart = stock_data['df']
-            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
-            fig.add_trace(go.Candlestick(x=df_chart.index, open=df_chart['Open'], high=df_chart['High'], low=df_chart['Low'], close=df_chart['Close'], name='Fiyat'), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['EMA_20'], line=dict(color='#ff9800'), name='EMA 20'), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['RSI'], line=dict(color='#0284c7'), name='RSI'), row=2, col=1)
-            fig.update_layout(template="plotly_white", height=500)
-            st.plotly_chart(fig, width="stretch")
+        # Filtreleme
+        filtered_df = res_df[
+            (res_df["Bilanço Skoru (Temel)"] >= min_fund_score) &
+            (res_df["Quant Skor (Teknik)"] >= min_quant_score)
+        ].sort_values(by="Quant Skor (Teknik)", ascending=False)
+        
+        st.dataframe(
+            filtered_df,
+            column_config={
+                "Quant Skor (Teknik)": st.column_config.ProgressColumn("Quant Skor", format="%d", min_value=0, max_value=100),
+                "Bilanço Skoru (Temel)": st.column_config.ProgressColumn("Bilanço Skoru", format="%d", min_value=0, max_value=100),
+                "Fiyat (TL)": st.column_config.NumberColumn(format="%.2f TL")
+            },
+            use_container_width=True,
+            hide_index=True
+        )
 
-    # ---------------------------------------------------------
-    # TAB 4: SANAL PORTFÖY (PAPER TRADING)
-    # ---------------------------------------------------------
-    with tab4:
-        st.subheader("💼 Sanal Portföy ve Simülasyon Takibi")
+# ------------------------------------------------------------------------------
+# TAB 2: BİLANÇO & FİNTABLES BENZERİ DETAYLI ANALİZ
+# ------------------------------------------------------------------------------
+with tab2:
+    st.subheader("Şirket Bilanço ve Rasyo Analizi")
+    selected_stock_f = st.selectbox("Analiz Edilecek Hisse Seçin:", [t.replace(".IS", "") for t in BIST100_TICKERS], key="f_select")
+    
+    if selected_stock_f:
+        tkr_obj = yf.Ticker(f"{selected_stock_f}.IS")
         
-        # OTOMATİK STOP-LOSS VE TAKE-PROFIT KONTROLÜ
-        for pos in st.session_state['portfolio'][:]:
-            stock_match = next((item for item in results if item["Hisse"] == pos["Hisse"]), None)
-            if stock_match:
-                curr_p = stock_match['Son Fiyat Raw']
-                pos['Guncel_Fiyat'] = curr_p
-                
-                if curr_p >= pos['TP']:
-                    revenue = pos['Lot'] * pos['TP']
-                    profit = revenue - (pos['Lot'] * pos['Alis_Fiyati'])
-                    st.session_state['virtual_cash'] += revenue
-                    st.session_state['trade_history'].append({
-                        "Hisse": pos['Hisse'], "Lot": pos['Lot'], "Alış": pos['Alis_Fiyati'], 
-                        "Satış": pos['TP'], "Kâr/Zarar (₺)": round(profit, 2), "Neden": "🎯 TP (Hedef Göründü)"
-                    })
-                    st.session_state['portfolio'].remove(pos)
-                    st.toast(f"🎯 {pos['Hisse']} Otomatik Satıldı! (Hedef Fiyata Ulaşıldı)", icon="🎉")
-                
-                elif curr_p <= pos['SL']:
-                    revenue = pos['Lot'] * pos['SL']
-                    loss = revenue - (pos['Lot'] * pos['Alis_Fiyati'])
-                    st.session_state['virtual_cash'] += revenue
-                    st.session_state['trade_history'].append({
-                        "Hisse": pos['Hisse'], "Lot": pos['Lot'], "Alış": pos['Alis_Fiyati'], 
-                        "Satış": pos['SL'], "Kâr/Zarar (₺)": round(loss, 2), "Neden": "🛑 SL (Stop Olundu)"
-                    })
-                    st.session_state['portfolio'].remove(pos)
-                    st.toast(f"🛑 {pos['Hisse']} Otomatik Stop Edildi!", icon="⚠️")
-
-        active_portfolio_val = sum([p['Lot'] * p['Guncel_Fiyat'] for p in st.session_state['portfolio']])
-        total_account_val = st.session_state['virtual_cash'] + active_portfolio_val
-        
-        m_col1, m_col2, m_col3 = st.columns(3)
-        m_col1.metric("Toplam Varlık Değeri", f"{total_account_val:,.2f} ₺")
-        m_col2.metric("Sanal Nakit Bakiye", f"{st.session_state['virtual_cash']:,.2f} ₺")
-        m_col3.metric("Açık Pozisyon Değeri", f"{active_portfolio_val:,.2f} ₺")
-        
+        col1, col2, col3, col4 = st.columns(4)
+        try:
+            info = tkr_obj.info
+            col1.metric("F/K Oranı", round(info.get('trailingPE', 0), 2))
+            col2.metric("PD/DD Oranı", round(info.get('priceToBook', 0), 2))
+            col3.metric("Özsermaye Kârlılığı (ROE)", f"%{round(info.get('returnOnEquity', 0)*100, 2)}")
+            col4.metric("Firma Değeri / FAVÖK", round(info.get('enterpriseToEbitda', 0), 2))
+        except:
+            st.warning("Veriler yfinance API üzerinden anlık çekilemedi.")
+            
         st.markdown("---")
-        st.write("### 🟢 Açık Pozisyonların")
+        kap_url = f"https://www.kap.org.tr/tr/sirket-bilgileri/ozet/{selected_stock_f}"
+        st.markdown(f"🔗 **[KAP (Kamuoyunu Aydınlatma Platformu) Sayfasına Git]({kap_url})**")
+
+# ------------------------------------------------------------------------------
+# TAB 3: İNTERAKTİF GRAFİK & İNDİKATÖRLER
+# ------------------------------------------------------------------------------
+with tab3:
+    st.subheader("Teknik İndikatör & Mum Grafiği")
+    selected_stock_g = st.selectbox("Grafik Hissesi Seçin:", [t.replace(".IS", "") for t in BIST100_TICKERS], key="g_select")
+    
+    if selected_stock_g:
+        df_chart = yf.download(f"{selected_stock_g}.IS", period="1y", interval="1d", progress=False)
+        if isinstance(df_chart.columns, pd.MultiIndex):
+            df_chart.columns = df_chart.columns.get_level_values(0)
+            
+        fig = go.Figure()
+        fig.add_trace(go.Candlestick(
+            x=df_chart.index,
+            open=df_chart['Open'],
+            high=df_chart['High'],
+            low=df_chart['Low'],
+            close=df_chart['Close'],
+            name="Fiyat"
+        ))
         
-        if st.session_state['portfolio']:
-            p_df = pd.DataFrame(st.session_state['portfolio'])
-            p_df['Maliyet (₺)'] = (p_df['Lot'] * p_df['Alis_Fiyati']).round(2)
-            p_df['Güncel Değer (₺)'] = (p_df['Lot'] * p_df['Guncel_Fiyat']).round(2)
-            p_df['Kâr / Zarar (₺)'] = (p_df['Güncel Değer (₺)'] - p_df['Maliyet (₺)']).round(2)
-            p_df['Kâr / Zarar (%)'] = ((p_df['Kâr / Zarar (₺)'] / p_df['Maliyet (₺)']) * 100).round(2)
+        # EMA 20
+        ema20 = df_chart['Close'].ewm(span=20, adjust=False).mean()
+        fig.add_trace(go.Scatter(x=df_chart.index, y=ema20, mode='lines', name='EMA 20', line=dict(color='orange', width=1.5)))
+        
+        fig.update_layout(
+            title=f"{selected_stock_g} Günlük Fiyat Grafiği ve EMA 20",
+            template="plotly_white",
+            height=500,
+            xaxis_rangeslider_visible=False
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+# ------------------------------------------------------------------------------
+# TAB 4: SANAL TRADING SİMÜLASYONU (PAPER TRADING)
+# ------------------------------------------------------------------------------
+with tab4:
+    st.subheader("Sanal Alım / Satım Paneli")
+    
+    c1, c2 = st.columns(2)
+    
+    with c1:
+        st.markdown("### 🛒 Hisse Al / Sat")
+        trade_ticker = st.selectbox("Hisse Seç:", [t.replace(".IS", "") for t in BIST100_TICKERS], key="t_select")
+        
+        # Son Fiyat Çek
+        try:
+            live_price = yf.Ticker(f"{trade_ticker}.IS").fast_info['lastPrice']
+        except:
+            live_price = 100.0
             
-            display_cols = ["Hisse", "Lot", "Alis_Fiyati", "Guncel_Fiyat", "TP", "SL", "Maliyet (₺)", "Güncel Değer (₺)", "Kâr / Zarar (₺)", "Kâr / Zarar (%)"]
-            st.dataframe(p_df[display_cols], width="stretch")
-            
-            st.write("#### 🔻 Manuel Pozisyon Kapat")
-            close_col1, close_col2 = st.columns([3, 1])
-            with close_col1:
-                stock_to_close = st.selectbox("Kapatılacak Pozisyonu Seç:", [p['Hisse'] for p in st.session_state['portfolio']], key="close_pos_select")
-            with close_col2:
-                if st.button(f"❌ {stock_to_close} Hissesini Sat", key="manual_close_btn"):
-                    target_p = next(p for p in st.session_state['portfolio'] if p['Hisse'] == stock_to_close)
-                    rev = target_p['Lot'] * target_p['Guncel_Fiyat']
-                    p_loss = rev - (target_p['Lot'] * target_p['Alis_Fiyati'])
-                    st.session_state['virtual_cash'] += rev
-                    st.session_state['trade_history'].append({
-                        "Hisse": target_p['Hisse'], "Lot": target_p['Lot'], "Alış": target_p['Alis_Fiyati'], 
-                        "Satış": target_p['Guncel_Fiyat'], "Kâr/Zarar (₺)": round(p_loss, 2), "Neden": "✋ Manuel Kapatıldı"
-                    })
-                    st.session_state['portfolio'].remove(target_p)
-                    st.success(f"{stock_to_close} pozisyonu satıldı.")
-                    st.rerun()
+        st.write(f"**Anlık Fiyat:** {live_price:,.2f} TL")
+        trade_qty = st.number_input("Adet:", min_value=1, value=10, step=1)
+        
+        col_buy, col_sell = st.columns(2)
+        
+        # ALIM İŞLEMİ
+        if col_buy.button("🟢 HİSSE AL"):
+            total_cost = trade_qty * live_price
+            if st.session_state.cash >= total_cost:
+                st.session_state.cash -= total_cost
+                
+                if trade_ticker in st.session_state.portfolio:
+                    old_qty = st.session_state.portfolio[trade_ticker]['qty']
+                    old_avg = st.session_state.portfolio[trade_ticker]['avg_price']
+                    new_qty = old_qty + trade_qty
+                    new_avg = ((old_qty * old_avg) + total_cost) / new_qty
+                    st.session_state.portfolio[trade_ticker] = {'qty': new_qty, 'avg_price': new_avg}
+                else:
+                    st.session_state.portfolio[trade_ticker] = {'qty': trade_qty, 'avg_price': live_price}
+                    
+                st.session_state.trade_history.append({
+                    "Tarih": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "Hisse": trade_ticker, "İşlem": "ALIM", "Adet": trade_qty, "Fiyat": live_price
+                })
+                st.success(f"{trade_qty} adet {trade_ticker} alındı!")
+                st.rerun()
+            else:
+                st.error("Yetersiz Nakit Bakiye!")
+                
+        # SATIM İŞLEMİ
+        if col_sell.button("🔴 HİSSE SAT"):
+            if trade_ticker in st.session_state.portfolio and st.session_state.portfolio[trade_ticker]['qty'] >= trade_qty:
+                total_income = trade_qty * live_price
+                st.session_state.cash += total_income
+                
+                st.session_state.portfolio[trade_ticker]['qty'] -= trade_qty
+                if st.session_state.portfolio[trade_ticker]['qty'] == 0:
+                    del st.session_state.portfolio[trade_ticker]
+                    
+                st.session_state.trade_history.append({
+                    "Tarih": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "Hisse": trade_ticker, "İşlem": "SATIM", "Adet": trade_qty, "Fiyat": live_price
+                })
+                st.success(f"{trade_qty} adet {trade_ticker} satıldı!")
+                st.rerun()
+            else:
+                st.error("Portföyünüzde yeterli adet yok!")
+
+    with c2:
+        st.markdown("### 📋 Mevcut Portföyüm")
+        if st.session_state.portfolio:
+            port_data = []
+            for tkr, p_info in st.session_state.portfolio.items():
+                try:
+                    c_price = yf.Ticker(f"{tkr}.IS").fast_info['lastPrice']
+                except:
+                    c_price = p_info['avg_price']
+                val = p_info['qty'] * c_price
+                pnl = (c_price - p_info['avg_price']) * p_info['qty']
+                
+                port_data.append({
+                    "Hisse": tkr, "Adet": p_info['qty'], 
+                    "Maliyet": round(p_info['avg_price'], 2), 
+                    "Son Fiyat": round(c_price, 2),
+                    "Toplam Değer": round(val, 2),
+                    "Kâr/Zarar (TL)": round(pnl, 2)
+                })
+            st.dataframe(pd.DataFrame(port_data), use_container_width=True, hide_index=True)
         else:
-            st.info("Henüz açık bir sanal pozisyonun bulunmuyor. 'Canlı Radar' sekmesinden sanal alım yapabilirsin.")
-            
-        if st.session_state['trade_history']:
-            st.markdown("---")
-            st.write("### 📜 Kapatılan İşlem Geçmişi (Realize Edilenler)")
-            st.dataframe(pd.DataFrame(st.session_state['trade_history']), width="stretch")
+            st.info("Portföyünüzde henüz hisse bulunmuyor.")
 
-        st.markdown("---")
-        if st.button("⚠️ Sanal Portföyü ve Bakiyeyi Sıfırla (100.000 ₺ Yap)", key="reset_portfolio_btn"):
-            st.session_state['virtual_cash'] = 100000.0
-            st.session_state['portfolio'] = []
-            st.session_state['trade_history'] = []
-            st.success("Sanal portföyün başarıyla sıfırlandı!")
-            st.rerun()
-else:
-    st.warning("Veri taranamadı veya listede uygun hisse bulunamadı. Lütfen 'Radarı Çalıştır / Yenile' butonuna basarak tekrar deneyin.")
-
+    st.markdown("---")
+    st.markdown("### 📜 Geçmiş İşlemler")
+    if st.session_state.trade_history:
+        st.dataframe(pd.DataFrame(st.session_state.trade_history), use_container_width=True, hide_index=True)
