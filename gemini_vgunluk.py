@@ -5,16 +5,13 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import yfinance as yf
 import sqlite3
-from scipy.optimize import minimize
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import time
 from datetime import datetime
 
 # ==========================================
-# 0. STREAMLIT CONFIGURATION
+# 0. STREAMLIT CONFIGURATION & DATABASE
 # ==========================================
 st.set_page_config(
-    page_title="v44.2 Quant Master Engine - BIST 100 Professional",
+    page_title="v44.2 Quant Master Engine - Complete Desk",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -31,14 +28,31 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# Veritabanı Kurulumu (Sanal Alım-Satım Robotu İçin)
+def init_db():
+    conn = sqlite3.connect("portfolio.db")
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS portfolio 
+                 (ticker TEXT PRIMARY KEY, amount REAL, avg_price REAL)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS balance 
+                 (id INTEGER PRIMARY KEY, cash REAL)''')
+    
+    # Başlangıç Sanal Bakiye (100.000 TL)
+    c.execute("SELECT count(*) FROM balance")
+    if c.fetchone()[0] == 0:
+        c.execute("INSERT INTO balance (id, cash) VALUES (1, 100000.0)")
+    conn.commit()
+    conn.close()
+
+init_db()
+
 # ==========================================
-# 1. TEKNİK İNDİKATÖR VE RİSK HESAPLAMA MOTORU (DÜZELTİLDİ)
+# 1. TEKNİK İNDİKATÖR VE RİSK HESAPLAMA MOTORU
 # ==========================================
 
 class TechnicalFilterEngine:
     @staticmethod
     def calculate_rsi(data: pd.DataFrame | pd.Series, period: int = 14) -> float:
-        # Sadece Close serisini alarak TypeError hatasını engelliyoruz
         series = data['Close'] if isinstance(data, pd.DataFrame) else data
         delta = series.diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
@@ -162,7 +176,7 @@ class VolumeProfileEngine:
         return float(val.iloc[0]) if isinstance(val, pd.Series) else float(val)
 
 # ==========================================
-# 3. YENİLENMİŞ GELİŞMİŞ SKORLAMA MOTORU
+# 3. GELİŞMİŞ SKORLAMA MOTORU
 # ==========================================
 
 class MultiFactorEngineV441:
@@ -174,36 +188,30 @@ class MultiFactorEngineV441:
         last_price_val = df['Close'].iloc[-1]
         last_price = float(last_price_val.iloc[0]) if isinstance(last_price_val, pd.Series) else float(last_price_val)
         
-        # 1. Metrikler (Güvenli Çağrı)
         rsi = TechnicalFilterEngine.calculate_rsi(df)
         adx = TechnicalFilterEngine.calculate_adx(df)
         rvol = TechnicalFilterEngine.calculate_rvol(df)
         rs_score = TechnicalFilterEngine.calculate_relative_strength(df, df_xu100)
         atr = TechnicalFilterEngine.calculate_atr(df)
         
-        # 2. ATR Tabanlı Hedef, Stop ve Risk/Ödül (R:R)
         stop_loss = round(last_price - (2.0 * atr), 2)
         target_price = round(last_price + (3.5 * atr), 2)
         risk = last_price - stop_loss
         reward = target_price - last_price
         rr_ratio = round(reward / (risk + 1e-9), 2)
         
-        # 3. SMC & Hacim
         smc = AdvancedSMCEngineV44.analyze_structure(df)
         poc = VolumeProfileEngine.calculate_vpvr_poc(df)
         avwap = VolumeProfileEngine.calculate_avwap(df)
         
-        # 4. Puanlama Sistemi
         score = 50.0
         score += regime_score * 10.0
         
-        # SMC Katkıları
         if smc["Zone"] == "DISCOUNT 🟢": score += 12
         if smc["OB_Mitigated"]: score += 10
         if smc["MSS"]: score += 8
         if smc["Zone"] == "PREMIUM 🔴": score -= 8
         
-        # Filtre Katkıları
         if 45 <= rsi <= 65: score += 8
         elif rsi > 75: score -= 5
         
@@ -240,7 +248,7 @@ class MultiFactorEngineV441:
         }
 
 # ==========================================
-# 4. BIST 100 VERİ İNDİRME VE STREAMLIT ARAYÜZÜ
+# 4. VERİ İNDİRME MEKANİZMASI
 # ==========================================
 
 BIST100_LIST = ["GUBRF", "YEOTK", "MAVI", "DOHOL", "TUPRS", "ENJSA", "ASELS", "THYAO", "BIMAS", "AKBNK", "EREGL", "SAHOL", "KCHOL", "SISE"]
@@ -266,43 +274,180 @@ def fetch_data():
 
 data_dict, df_xu100 = fetch_data()
 
-st.title("🏛️ v44.2 Quant Master Engine - Production Desk")
-st.caption("RSI • ADX • RVOL • Relative Strength • ATR Risk/Reward • SMC • Volume Profile")
+# ==========================================
+# 5. STREAMLIT SEKMELİ ARAYÜZ (TÜM MODÜLLER)
+# ==========================================
 
-if st.button("⚡ Taramayı Gelişmiş Filtrelerle Çalıştır", use_container_width=True):
-    with st.spinner("BIST Hisseleri Çoklu İndikatör ve ATR Risk Modeli ile Taranıyor..."):
-        results = []
-        for t, df in data_dict.items():
-            res = MultiFactorEngineV441.process_ticker(t, df, df_xu100, regime_score=0.8)
-            if res: results.append(res)
+st.title("🏛️ Quant Master Engine - BIST 100 Desk")
+
+tabs = st.tabs(["📊 Tarama & Skorlama", "📈 Gelişmiş Grafik", "🧪 Backtest Motoru", "🤖 Sanal Portföy / Robot"])
+
+# --- TAB 1: TARAMA VE SKORLAMA ---
+with tabs[0]:
+    st.subheader("⚡ BIST 100 Çoklu Faktör Taraması")
+    if st.button("Taramayı Çalıştır", use_container_width=True):
+        with st.spinner("Hisseler analiz ediliyor..."):
+            results = []
+            for t, df in data_dict.items():
+                res = MultiFactorEngineV441.process_ticker(t, df, df_xu100, regime_score=0.8)
+                if res: results.append(res)
+            if results:
+                df_res = pd.DataFrame(results).sort_values(by="Kurumsal Skor", ascending=False)
+                st.session_state['df_v442'] = df_res
+
+    if 'df_v442' in st.session_state:
+        st.dataframe(
+            st.session_state['df_v442'],
+            column_config={
+                "Kurumsal Skor": st.column_config.ProgressColumn("Skor", min_value=0, max_value=100, format="%.1f"),
+                "Son Fiyat": st.column_config.NumberColumn(format="₺%.2f"),
+                "Stop Loss (2x ATR)": st.column_config.NumberColumn(format="₺%.2f"),
+                "Hedef (3.5x ATR)": st.column_config.NumberColumn(format="₺%.2f"),
+            },
+            use_container_width=True,
+            height=400
+        )
+
+# --- TAB 2: GELİŞMİŞ GRAFİK ---
+with tabs[1]:
+    st.subheader("📈 Candlestick & Volume Profile Grafiği")
+    selected_ticker = st.selectbox("Hisse Seçin", BIST100_LIST)
+    
+    if selected_ticker in data_dict:
+        df_plot = data_dict[selected_ticker]
+        poc_price = VolumeProfileEngine.calculate_vpvr_poc(df_plot)
+        avwap_price = VolumeProfileEngine.calculate_avwap(df_plot)
+        
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
+        
+        # Mum Grafiği
+        fig.add_trace(go.Candlestick(
+            x=df_plot.index, open=df_plot['Open'], high=df_plot['High'],
+            low=df_plot['Low'], close=df_plot['Close'], name='Fiyat'
+        ), row=1, col=1)
+        
+        # POC ve AVWAP Çizgileri
+        fig.add_hline(y=poc_price, line_dash="dash", line_color="orange", annotation_text="POC Level", row=1, col=1)
+        
+        # Hacim
+        fig.add_trace(go.Bar(x=df_plot.index, y=df_plot['Volume'], name='Hacim', marker_color='rgba(49, 130, 206, 0.5)'), row=2, col=1)
+        
+        fig.update_layout(template="plotly_dark", height=600, margin=dict(l=20, r=20, t=20, b=20))
+        st.plotly_chart(fig, use_container_width=True)
+
+# --- TAB 3: BACKTEST MOTORU ---
+with tabs[2]:
+    st.subheader("🧪 İndikatör Stratejisi Backtest")
+    bt_ticker = st.selectbox("Backtest Hissesi", BIST100_LIST, key="bt_ticker")
+    fast_ma = st.number_input("Hızlı Hareketli Ortalama (SMA)", value=10, min_value=2)
+    slow_ma = st.number_input("Yavaş Hareketli Ortalama (SMA)", value=30, min_value=5)
+    
+    if st.button("Backtest'i Başlat"):
+        df_bt = data_dict[bt_ticker].copy()
+        df_bt['SMA_Fast'] = df_bt['Close'].rolling(fast_ma).mean()
+        df_bt['SMA_Slow'] = df_bt['Close'].rolling(slow_ma).mean()
+        
+        df_bt['Signal'] = 0
+        df_bt.loc[df_bt['SMA_Fast'] > df_bt['SMA_Slow'], 'Signal'] = 1
+        df_bt['Returns'] = df_bt['Close'].pct_change()
+        df_bt['Strategy_Returns'] = df_bt['Returns'] * df_bt['Signal'].shift(1)
+        
+        cum_buy_hold = (1 + df_bt['Returns']).cumprod()
+        cum_strategy = (1 + df_bt['Strategy_Returns']).cumprod()
+        
+        fig_bt = go.Figure()
+        fig_bt.add_trace(go.Scatter(x=df_bt.index, y=cum_buy_hold, name="AL & TUT Getirisi"))
+        fig_bt.add_trace(go.Scatter(x=df_bt.index, y=cum_strategy, name="SMA Strateji Getirisi"))
+        fig_bt.update_layout(template="plotly_dark", height=450)
+        
+        st.plotly_chart(fig_bt, use_container_width=True)
+        
+        tot_ret = (cum_strategy.iloc[-1] - 1) * 100
+        st.success(f"Strateji Toplam Getirisi: %{tot_ret:.2f}")
+
+# --- TAB 4: SANAL PORTFÖY VE ALIM-SATIM ROBOTU ---
+with tabs[3]:
+    st.subheader("🤖 Sanal Ticaret Simülasyonu & Portföy")
+    
+    conn = sqlite3.connect("portfolio.db")
+    c = conn.cursor()
+    c.execute("SELECT cash FROM balance WHERE id=1")
+    cash = c.fetchone()[0]
+    
+    st.metric(label="Mevcut Sanal Nakit", value=f"₺{cash:,.2f}")
+    
+    col_buy, col_sell = st.columns(2)
+    
+    with col_buy:
+        st.markdown("### 🟢 Sanal Alım Yap")
+        trade_ticker = st.selectbox("Hisse", BIST100_LIST, key="trade_buy_t")
+        trade_qty = st.number_input("Adet", min_value=1, value=10, key="trade_buy_q")
+        
+        if st.button("Alım Emri Gir"):
+            price = float(data_dict[trade_ticker]['Close'].iloc[-1])
+            total_cost = price * trade_qty
             
-        if results:
-            df_res = pd.DataFrame(results).sort_values(by="Kurumsal Skor", ascending=False)
-            st.session_state['df_v442'] = df_res
+            if cash >= total_cost:
+                new_cash = cash - total_cost
+                c.execute("UPDATE balance SET cash=? WHERE id=1", (new_cash,))
+                
+                c.execute("SELECT amount, avg_price FROM portfolio WHERE ticker=?", (trade_ticker,))
+                row = c.fetchone()
+                if row:
+                    curr_amt, curr_avg = row
+                    new_amt = curr_amt + trade_qty
+                    new_avg = ((curr_amt * curr_avg) + total_cost) / new_amt
+                    c.execute("UPDATE portfolio SET amount=?, avg_price=? WHERE ticker=?", (new_amt, new_avg, trade_ticker))
+                else:
+                    c.execute("INSERT INTO portfolio VALUES (?, ?, ?)", (trade_ticker, trade_qty, price))
+                
+                conn.commit()
+                st.success(f"{trade_qty} adet {trade_ticker} ₺{price:.2f} fiyattan alındı!")
+                st.rerun()
+            else:
+                st.error("Yetersiz Bakiye!")
+                
+    with col_sell:
+        st.markdown("### 🔴 Sanal Satış Yap")
+        # Portföydeki Hisseleri Getir
+        df_port = pd.read_sql_query("SELECT * FROM portfolio WHERE amount > 0", conn)
+        if not df_port.empty:
+            sell_ticker = st.selectbox("Satılacak Hisse", df_port['ticker'].tolist())
+            sell_qty = st.number_input("Satılacak Adet", min_value=1, value=1, key="trade_sell_q")
+            
+            if st.button("Satış Emri Gir"):
+                price = float(data_dict[sell_ticker]['Close'].iloc[-1])
+                c.execute("SELECT amount FROM portfolio WHERE ticker=?", (sell_ticker,))
+                curr_amt = c.fetchone()[0]
+                
+                if sell_qty <= curr_amt:
+                    total_gain = price * sell_qty
+                    new_cash = cash + total_gain
+                    c.execute("UPDATE balance SET cash=? WHERE id=1", (new_cash,))
+                    
+                    if sell_qty == curr_amt:
+                        c.execute("DELETE FROM portfolio WHERE ticker=?", (sell_ticker,))
+                    else:
+                        c.execute("UPDATE portfolio SET amount=amount-? WHERE ticker=?", (sell_qty, sell_ticker))
+                        
+                    conn.commit()
+                    st.success(f"{sell_qty} adet {sell_ticker} ₺{price:.2f} fiyattan satıldı!")
+                    st.rerun()
+                else:
+                    st.error("Portföyünüzde bu kadar adet yok!")
         else:
-            st.warning("Tarama sonucunda veri elde edilemedi.")
+            st.info("Portföyünüzde henüz hisse bulunmuyor.")
 
-if 'df_v442' in st.session_state:
-    df_res = st.session_state['df_v442']
-    
-    st.subheader("📋 Gelişmiş Tarama ve Risk Tablosu")
-    st.dataframe(
-        df_res,
-        column_config={
-            "Kurumsal Skor": st.column_config.ProgressColumn("Kurumsal Skor", min_value=0, max_value=100, format="%.1f"),
-            "Son Fiyat": st.column_config.NumberColumn(format="₺%.2f"),
-            "Stop Loss (2x ATR)": st.column_config.NumberColumn(format="₺%.2f"),
-            "Hedef (3.5x ATR)": st.column_config.NumberColumn(format="₺%.2f"),
-            "RVOL": st.column_config.NumberColumn(format="%.2fx"),
-            "RS (BIST)": st.column_config.NumberColumn(format="%.2f")
-        },
-        use_container_width=True,
-        height=450
-    )
-    
     st.markdown("---")
-    st.markdown("### 💡 Eklenen Yeni Sütunların Anlamı ve Kullanımı:")
-    c1, c2, c3 = st.columns(3)
-    c1.info("**RVOL > 1.2:** İşleme girerken hacim onayının olduğunu gösterir.")
-    c2.info("**RS (BIST) > 1.0:** Hissenin BIST 100 endeksine kıyasla pozitif ayrıştığını doğrular.")
-    c3.info("**ADX > 25:** Mevcut trendin ne kadar güçlü olduğunu ölçer.")
+    st.markdown("### 💼 Portföy Durumu")
+    df_port_view = pd.read_sql_query("SELECT * FROM portfolio WHERE amount > 0", conn)
+    if not df_port_view.empty:
+        df_port_view['Anlık Fiyat'] = df_port_view['ticker'].apply(lambda x: float(data_dict[x]['Close'].iloc[-1]) if x in data_dict else 0.0)
+        df_port_view['Toplam Değer'] = df_port_view['amount'] * df_port_view['Anlık Fiyat']
+        df_port_view['Kar/Zarar (%)'] = ((df_port_view['Anlık Fiyat'] - df_port_view['avg_price']) / df_port_view['avg_price']) * 100
+        st.dataframe(df_port_view, use_container_width=True)
+    else:
+        st.write("Portföy boş.")
+        
+    conn.close()
+
