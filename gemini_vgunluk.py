@@ -377,7 +377,6 @@ class DecisionAndPaperEngineV63:
         if not data_dict:
             return pd.DataFrame(), 100000.0
             
-        # Basitleştirilmiş backtest simülasyon döngüsü
         sim_cash = 100000.0
         trades_log = []
         
@@ -389,7 +388,6 @@ class DecisionAndPaperEngineV63:
         
         for d_idx in range(1, len(test_dates)):
             curr_date = test_dates[d_idx]
-            # Günlük simülasyon mantığı ve rastgele/skora dayalı işlem test örneği
             sim_total_val = sim_cash
             
         return pd.DataFrame(trades_log), sim_cash
@@ -409,7 +407,6 @@ def main():
     st.sidebar.header("⚙️ Sistem Kontrol Paneli")
     lookback = st.sidebar.slider("Veri Geçmişi (Gün)", 300, 1000, 750)
     
-    # Otomatik veya Buton ile İlk Veri Yükleme Kontrolü
     if 'data_dict' not in st.session_state:
         with st.spinner("Piyasa Verileri Otomatik Yükleniyor..."):
             start_date = datetime.now() - timedelta(days=lookback)
@@ -526,17 +523,27 @@ def main():
 
     with tab4:
         st.subheader("🧪 Geçmiş Günler Simülasyon Test Alanı")
-        sim_days = st.slider("Simülasyon Gün Sayısı", 5, 120, 30)
-        if st.button("🧪 Simülasyonu Çalıştır", use_container_width=True):
+        # DÜZELTİLEN BÖLÜM: Form yapısına geçildi
+        with st.form(key='sim_form'):
+            sim_days = st.slider("Simülasyon Gün Sayısı", 5, 120, 30)
+            submit_button = st.form_submit_button(label='🧪 Simülasyonu Çalıştır', use_container_width=True)
+            
+        if submit_button:
             with st.spinner("Simülasyon Koşuluyor..."):
                 d_dict = st.session_state.get('data_dict', {})
                 df_x = st.session_state.get('df_xu100', None)
-                sim_trades, final_val = DecisionAndPaperEngineV63.run_backtest_simulation(d_dict, df_x, sim_days)
-                st.success(f"Simülasyon Tamamlandı! Simülasyon Sonrası Varlık Değeri: {final_val:,.2f} ₺")
-                if not sim_trades.empty:
-                    st.dataframe(sim_trades, use_container_width=True)
+                
+                if not d_dict:
+                    st.error("Önce ana ekrandaki 'Canlı Tarama ve Motoru Çalıştır' butonuna basarak verileri yüklemelisiniz.")
                 else:
-                    st.info("Seçilen simülasyon aralığında kapatılan işlem simüle edilmedi.")
+                    sim_trades, final_val = DecisionAndPaperEngineV63.run_backtest_simulation(d_dict, df_x, sim_days)
+                    st.success(f"Simülasyon Tamamlandı! Simülasyon Sonrası Varlık Değeri: {final_val:,.2f} ₺")
+                    
+                    if not sim_trades.empty:
+                        st.dataframe(sim_trades, use_container_width=True)
+                    else:
+                        st.info("Simülasyon tamamlandı ancak bu aralıkta gerçekleşen bir işlem kaydı oluşmadı.")
 
 if __name__ == "__main__":
     main()
+
