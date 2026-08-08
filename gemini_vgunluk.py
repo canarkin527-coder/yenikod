@@ -10,7 +10,7 @@ import sqlite3
 # 0. STREAMLIT CONFIGURATION & DATABASE
 # ==========================================
 st.set_page_config(
-    page_title="v44.3 Quant Master Engine - Quality Weighted Desk",
+    page_title="v44.4 Quant Master Engine - Institutional Quality Desk",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -34,6 +34,9 @@ def init_db():
                  (ticker TEXT PRIMARY KEY, amount REAL, avg_price REAL)''')
     c.execute('''CREATE TABLE IF NOT EXISTS balance 
                  (id INTEGER PRIMARY KEY, cash REAL)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS history 
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, 
+                  ticker TEXT, type TEXT, amount REAL, price REAL, pnl REAL)''')
     c.execute("SELECT count(*) FROM balance")
     if c.fetchone()[0] == 0:
         c.execute("INSERT INTO balance (id, cash) VALUES (1, 100000.0)")
@@ -43,13 +46,13 @@ def init_db():
 init_db()
 
 # ==========================================
-# 1. TEKNİK İNDİKATÖR VE RİSK HESAPLAMA MOTORU
+# 1. TEKNİK İNDİKATÖR VE GERÇEK WİLDER ADX MOTORU
 # ==========================================
 
 class TechnicalFilterEngine:
     @staticmethod
-    def calculate_rsi(data: pd.DataFrame | pd.Series, period: int = 14) -> float:
-        series = data['Close'] if isinstance(data, pd.DataFrame) else data
+    def calculate_rsi(df: pd.DataFrame, period: int = 14) -> float:
+        series = df['Close']
         delta = series.diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
@@ -59,17 +62,27 @@ class TechnicalFilterEngine:
         return float(val.iloc[0]) if isinstance(val, pd.Series) else float(val)
 
     @staticmethod
+    def calculate_true_range(df: pd.DataFrame) -> pd.Series:
+        """GERÇEK WILDER TRUE RANGE (GAP'LER DAHİL)"""
+        high = df['High']
+        low = df['Low']
+        prev_close = df['Close'].shift(1)
+        tr1 = high - low
+        tr2 = np.abs(high - prev_close)
+        tr3 = np.abs(low - prev_close)
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        return tr
+
+    @staticmethod
     def calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
-        high_low = df['High'] - df['Low']
-        high_close = np.abs(df['High'] - df['Close'].shift())
-        low_close = np.abs(df['Low'] - df['Close'].shift())
-        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        tr = TechnicalFilterEngine.calculate_true_range(df)
         atr = tr.rolling(period).mean()
         val = atr.iloc[-1]
         return float(val.iloc[0]) if isinstance(val, pd.Series) else float(val)
 
     @staticmethod
     def calculate_adx(df: pd.DataFrame, period: int = 14) -> float:
+        """GERÇEK WILDER ADX HESAPLAMASI"""
         df_calc = df.copy()
         df_calc['up'] = df_calc['High'] - df_calc['High'].shift(1)
         df_calc['down'] = df_calc['Low'].shift(1) - df_calc['Low']
@@ -77,11 +90,11 @@ class TechnicalFilterEngine:
         df_calc['+dm'] = np.where((df_calc['up'] > df_calc['down']) & (df_calc['up'] > 0), df_calc['up'], 0.0)
         df_calc['-dm'] = np.where((df_calc['down'] > df_calc['up']) & (df_calc['down'] > 0), df_calc['down'], 0.0)
         
-        atr = df_calc['High'] - df_calc['Low']
-        atr_smooth = atr.rolling(period).mean()
+        tr = TechnicalFilterEngine.calculate_true_range(df_calc)
+        tr_smooth = tr.rolling(period).mean()
         
-        plus_di = 100 * (df_calc['+dm'].rolling(period).mean() / (atr_smooth + 1e-9))
-        minus_di = 100 * (df_calc['-dm'].rolling(period).mean() / (atr_smooth + 1e-9))
+        plus_di = 100 * (df_calc['+dm'].rolling(period).mean() / (tr_smooth + 1e-9))
+        minus_di = 100 * (df_calc['-dm'].rolling(period).mean() / (tr_smooth + 1e-9))
         
         dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di + 1e-9)
         adx = dx.rolling(period).mean()
@@ -108,7 +121,7 @@ class TechnicalFilterEngine:
         return float((1 + r_stock) / (1 + r_index + 1e-9))
 
 # ==========================================
-# 2. SMC & VOLUME PROFILE YARDIMCI SINIFLARI
+# 2. ADVANCED SMC & GEOMETRIC OB/MSS ENGINE
 # ==========================================
 
 class AdvancedSMCEngineV44:
@@ -123,7 +136,9 @@ class AdvancedSMCEngineV44:
         last_close = float(closes.iloc[-1].iloc[0]) if isinstance(closes.iloc[-1], pd.Series) else float(closes.iloc[-1])
         last_low = float(lows.iloc[-1].iloc[0]) if isinstance(lows.iloc[-1], pd.Series) else float(lows.iloc[-1])
         
+        # Bullish / Bearish MSS (Market Structure Shift)
         mss_bullish = len(sh_idx) > 0 and last_close > float(highs.iloc[sh_idx[-1]])
+        mss_bearish = len(sl_idx) > 0 and last_close < float(lows.iloc[sl_idx[-1]])
         
         lookback = min(60, len(df))
         rec_h = float(highs.iloc[-lookback:].max())
@@ -136,13 +151,23 @@ class AdvancedSMCEngineV44:
             if last_close > eq_level + (r_size * 0.15): zone = "PREMIUM 🔴"
             elif last_close < eq_level - (r_size * 0.15): zone = "DISCOUNT 🟢"
             
+        # Geometrik Order Block & Structural Support
         ob_mitigated = False
+        structural_support = rec_l
         if len(sl_idx) > 0:
             last_sl_price = float(lows.iloc[sl_idx[-1]])
-            if last_low <= last_sl_price * 1.01 and last_close > last_sl_price:
+            structural_support = last_sl_price
+            if last_low <= last_sl_price * 1.015 and last_close > last_sl_price:
                 ob_mitigated = True
                 
-        return {"MSS": mss_bullish, "Zone": zone, "OB_Mitigated": ob_mitigated}
+        return {
+            "MSS_Bullish": mss_bullish, 
+            "MSS_Bearish": mss_bearish, 
+            "Zone": zone, 
+            "OB_Mitigated": ob_mitigated,
+            "Structural_Support": structural_support,
+            "Recent_High": rec_h
+        }
 
 class VolumeProfileEngine:
     @staticmethod
@@ -171,7 +196,7 @@ class VolumeProfileEngine:
         return float(avwap.iloc[0]) if isinstance(avwap, pd.Series) else float(avwap)
 
 # ==========================================
-# 3. HASSAS HASSASLAŞTIRILMIŞ VE KALİTE ODAKLI SKORLAMA MOTORU
+# 3. MİMARİ VE DİNAMİK R:R SKORLAMA MOTORU
 # ==========================================
 
 class QualityWeightedEngine:
@@ -189,35 +214,45 @@ class QualityWeightedEngine:
         rs_score = TechnicalFilterEngine.calculate_relative_strength(df, df_xu100)
         atr = TechnicalFilterEngine.calculate_atr(df)
         
-        stop_loss = round(last_price - (2.0 * atr), 2)
-        target_price = round(last_price + (3.5 * atr), 2)
-        risk = last_price - stop_loss
-        reward = target_price - last_price
-        rr_ratio = round(reward / (risk + 1e-9), 2)
-        
         smc = AdvancedSMCEngineV44.analyze_structure(df)
         poc = VolumeProfileEngine.calculate_vpvr_poc(df)
         avwap = VolumeProfileEngine.calculate_avwap(df)
         
+        # --- YAPISAL & DİNAMİK R:R HESAPLAMASI ---
+        # Stop = OB/Swing Low altı veya min 1.5 ATR
+        structural_stop = min(smc["Structural_Support"] * 0.99, last_price - (1.5 * atr))
+        stop_loss = round(min(last_price * 0.98, structural_stop), 2)
+        
+        # Hedef = Recent High / Liquidity Sweep Seviyesi
+        target_price = round(max(last_price + (2.5 * atr), smc["Recent_High"]), 2)
+        
+        risk = last_price - stop_loss
+        reward = target_price - last_price
+        rr_ratio = round(reward / (risk + 1e-9), 2)
+        
         # --- TABAN SKOR HESABI ---
         trend_vol_score = 0.0
-        if adx >= 25: trend_vol_score += 15.0
-        elif adx >= 18: trend_vol_score += 8.0
+        if adx >= 35: trend_vol_score += 15.0
+        elif adx >= 25: trend_vol_score += 12.0
+        elif adx >= 18: trend_vol_score += 6.0
         
         if rvol >= 1.2: trend_vol_score += 12.0
         elif rvol >= 0.8: trend_vol_score += 6.0
         
-        if rs_score > 1.0: trend_vol_score += 8.0
+        if rs_score > 1.05: trend_vol_score += 8.0
+        elif rs_score > 1.0: trend_vol_score += 4.0
         
         # SMC Skorlama
         smc_score = 0.0
         if smc["Zone"] == "DISCOUNT 🟢": smc_score += 15.0
         elif smc["Zone"] == "EQUILIBRIUM": smc_score += 5.0
+        elif smc["Zone"] == "PREMIUM 🔴": smc_score -= 10.0  # Asimetrik ceza
         
-        if smc["OB_Mitigated"]: smc_score += 15.0  # OB Test bonusu artırıldı
-        if smc["MSS"]: smc_score += 8.0
+        if smc["OB_Mitigated"]: smc_score += 15.0
+        if smc["MSS_Bullish"]: smc_score += 8.0
+        if smc["MSS_Bearish"]: smc_score -= 12.0
         
-        # Indikatör Teyidi
+        # İndikatör Teyidi
         tech_score = 0.0
         if 40 <= rsi <= 65: tech_score += 10.0
         if last_price > avwap: tech_score += 10.0
@@ -225,31 +260,31 @@ class QualityWeightedEngine:
         
         raw_score = trend_vol_score + smc_score + tech_score
         
-        # --- KADEMELİ VE HASSAS ELEME/CEZA MEKANİZMASI ---
+        # --- MARKET REGIME & ELEME FİLTRELERİ ---
         warnings = []
         is_candidate_setup = (smc["Zone"] == "DISCOUNT 🟢" and smc["OB_Mitigated"])
         
-        # 1. ADX Kademeli Ceza
+        # Market Regime Etkisi (Testere piyasasında puan kırma)
+        if regime_score < 0.5:
+            raw_score *= 0.88
+            warnings.append("⚠️ Piyasada Trend Yok")
+            
         if adx < 15:
-            penalty_adx = 0.90 if is_candidate_setup else 0.80  # Aday Setup ise ceza hafifletilir
+            penalty_adx = 0.90 if is_candidate_setup else 0.80
             raw_score *= penalty_adx
             warnings.append("⚠️ Zayıf Trend")
             
-        # 2. RVOL Kademeli Yumuşatma (0.40 - 0.79 Arası Doğrusal Cezalandırma)
         if rvol < 0.40:
             raw_score *= 0.80
             warnings.append("⚠️ Çok Düşük Hacim")
         elif 0.40 <= rvol < 0.80:
-            # Doğrusal Çarpan: 0.40 iken %10 ceza, 0.79 iken %2 ceza
             gradual_mult = 0.90 + (rvol - 0.40) * (0.08 / 0.40)
-            if is_candidate_setup: 
-                gradual_mult = min(1.0, gradual_mult + 0.05) # Dip koruması
+            if is_candidate_setup: gradual_mult = min(1.0, gradual_mult + 0.05)
             raw_score *= gradual_mult
-            if not is_candidate_setup:
-                warnings.append("💡 Akümülasyon Hacmi")
+            if not is_candidate_setup: warnings.append("💡 Akümülasyon Hacmi")
             
         if rsi > 70:
-            raw_score = min(raw_score, 75.0)
+            raw_score = min(raw_score, 70.0)
             warnings.append("⚠️ Aşırı Alım")
             
         if smc["Zone"] == "PREMIUM 🔴":
@@ -257,24 +292,22 @@ class QualityWeightedEngine:
 
         final_score = round(min(100.0, max(0.0, raw_score)), 1)
         
-        # --- TEKNİK KALİTE YILDIZ HESABI ---
+        # --- CONTINUOUS QUALİTY STARS ---
         quality_stars = 1
-        if adx >= 22: quality_stars += 1
-        if rvol >= 0.8: quality_stars += 1
+        if adx >= 25: quality_stars += 1
+        if rvol >= 1.0: quality_stars += 1
         if smc["Zone"] == "DISCOUNT 🟢": quality_stars += 1
-        if smc["OB_Mitigated"]: quality_stars += 1
+        if smc["OB_Mitigated"] and rr_ratio >= 1.75: quality_stars += 1
         
         star_str = "⭐" * quality_stars + "☆" * (5 - quality_stars)
         
-        # --- AKILLI SİNYAL ALGORİTMASI ---
+        # --- NİHAİ AL / SİNYAL FİLTRESİ ---
         signal = "NÖTR ⚪"
-        if final_score >= 75 and quality_stars >= 4:
-            signal = "GÜÇLÜ AL 🚀"
-        elif final_score >= 62 and quality_stars >= 3:
-            signal = "AL 🟢"
-        elif is_candidate_setup and final_score >= 55:
-            signal = "ADAY SETUP 🟡"  # Dip yapmış, hacim bekleyen hisseler!
-        elif final_score <= 40:
+        if final_score >= 68 and adx >= 20 and rvol >= 0.95 and rs_score >= 1.0 and rr_ratio >= 1.50 and rsi <= 68 and smc["Zone"] != "PREMIUM 🔴":
+            signal = "GÜÇLÜ AL 🚀" if final_score >= 78 else "AL 🟢"
+        elif is_candidate_setup and final_score >= 54 and adx >= 14:
+            signal = "ADAY SETUP 🟡"
+        elif final_score <= 38 or smc["MSS_Bearish"]:
             signal = "SAT 🔴"
         
         return {
@@ -296,21 +329,27 @@ class QualityWeightedEngine:
         }
 
 # ==========================================
-# 4. VERİ İNDİRME VE SEKMELER
+# 4. VERİ İNDİRME VE BİST 100 LİSTESİ (40+ HİSSE)
 # ==========================================
 
-BIST100_LIST = ["GUBRF", "YEOTK", "MAVI", "DOHOL", "TUPRS", "ENJSA", "ASELS", "THYAO", "BIMAS", "AKBNK", "EREGL", "SAHOL", "SISE"]
+BIST100_EXPANDED = [
+    "AKBNK", "ALARK", "ARCLK", "ASELS", "BIMAS", "BRSAN", "CIMSA", "DOHOL", 
+    "EKGYO", "ENJSA", "ENKAI", "EREGL", "FROTO", "GARAN", "GUBRF", "HEKTS", 
+    "ISCTR", "KCHOL", "KONTR", "KOZAL", "KRDMD", "MAVI", "MGROS", "ODAS", 
+    "OYAKC", "PETKM", "PGSUS", "SAHOL", "SASA", "SISE", "SKBNK", "TCELL", 
+    "THYAO", "TKFEN", "TOASO", "TSKB", "TTKOM", "TUPRS", "VAKBN", "YEOTK", "YKBNK"
+]
 
 @st.cache_data(ttl=1800)
 def fetch_data():
-    tickers = [f"{t}.IS" for t in BIST100_LIST] + ["XU100.IS"]
+    tickers = [f"{t}.IS" for t in BIST100_EXPANDED] + ["XU100.IS"]
     raw = yf.download(tickers, period="1y", group_by='ticker', progress=False)
     
     data_dict = {}
-    for t in BIST100_LIST:
+    for t in BIST100_EXPANDED:
         try:
             df = raw[f"{t}.IS"][['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
-            if not df.empty: data_dict[t] = df
+            if not df.empty and len(df) > 60: data_dict[t] = df
         except: continue
         
     try:
@@ -322,40 +361,47 @@ def fetch_data():
 
 data_dict, df_xu100 = fetch_data()
 
-st.title("🏛️ Quant Master Engine - Kalite Filtreli BIST 100")
+# Piyasa Rejimi (XU100 ADX / Trend hesabı)
+regime_score = 0.8
+if df_xu100 is not None:
+    xu_adx = TechnicalFilterEngine.calculate_adx(df_xu100)
+    regime_score = 1.0 if xu_adx >= 22 else 0.4
 
-tabs = st.tabs(["📊 Tarama & Kalite Analizi", "📈 Gelişmiş Grafik", "🧪 Backtest Motoru", "🤖 Sanal Portföy / Robot"])
+st.title("🏛️ Quant Master Engine v44.4 - Institutional Desk")
+
+tabs = st.tabs(["📊 Tarama & Kalite Analizi", "📈 Gelişmiş Grafik", "🧪 Gerçek Strateji Backtest Motoru", "🤖 Sanal Portföy & Robot"])
 
 # --- TAB 1: TARAMA VE SKORLAMA ---
 with tabs[0]:
-    st.subheader("⚡ Ağırlıklandırılmış Kalite Taraması")
-    if st.button("Kalite Odaklı Taramayı Çalıştır", use_container_width=True):
-        with st.spinner("Katmanlı hiyerarşi ve hassas kalite analizi yapılıyor..."):
+    st.subheader(f"⚡ BIST 100 Genişletilmiş Tarama (Piyasa Rejim Skor: {regime_score:.2f})")
+    if st.button("Gelişmiş Taramayı Çalıştır", use_container_width=True):
+        with st.spinner("Katmanlı hiyerarşi ve dinamik R:R analizi yapılıyor..."):
             results = []
             for t, df in data_dict.items():
-                res = QualityWeightedEngine.process_ticker(t, df, df_xu100, regime_score=0.8)
+                res = QualityWeightedEngine.process_ticker(t, df, df_xu100, regime_score=regime_score)
                 if res: results.append(res)
             if results:
                 df_res = pd.DataFrame(results).sort_values(by="Kurumsal Skor", ascending=False)
-                st.session_state['df_v443'] = df_res
+                st.session_state['df_v444'] = df_res
 
-    if 'df_v443' in st.session_state:
+    if 'df_v444' in st.session_state:
         st.dataframe(
-            st.session_state['df_v443'],
+            st.session_state['df_v444'],
             column_config={
                 "Kurumsal Skor": st.column_config.ProgressColumn("Skor", min_value=0, max_value=100, format="%.1f"),
                 "Son Fiyat": st.column_config.NumberColumn(format="₺%.2f"),
                 "Stop Loss": st.column_config.NumberColumn(format="₺%.2f"),
                 "Hedef": st.column_config.NumberColumn(format="₺%.2f"),
+                "R:R Ratio": st.column_config.NumberColumn(format="%.2f"),
             },
             use_container_width=True,
-            height=450
+            height=500
         )
 
 # --- TAB 2: GELİŞMİŞ GRAFİK ---
 with tabs[1]:
     st.subheader("📈 Candlestick & Volume Profile Grafiği")
-    selected_ticker = st.selectbox("Hisse Seçin", BIST100_LIST)
+    selected_ticker = st.selectbox("Hisse Seçin", list(data_dict.keys()))
     
     if selected_ticker in data_dict:
         df_plot = data_dict[selected_ticker]
@@ -373,39 +419,63 @@ with tabs[1]:
         fig.update_layout(template="plotly_dark", height=600, margin=dict(l=20, r=20, t=20, b=20))
         st.plotly_chart(fig, use_container_width=True)
 
-# --- TAB 3: BACKTEST MOTORU ---
+# --- TAB 3: GERÇEK STRATEJİ BACKTEST MOTORU (SMA DEĞİL!) ---
 with tabs[2]:
-    st.subheader("🧪 İndikatör Stratejisi Backtest")
-    bt_ticker = st.selectbox("Backtest Hissesi", BIST100_LIST, key="bt_ticker")
-    fast_ma = st.number_input("Hızlı Hareketli Ortalama (SMA)", value=10, min_value=2)
-    slow_ma = st.number_input("Yavaş Hareketli Ortalama (SMA)", value=30, min_value=5)
+    st.subheader("🧪 v44.4 Strateji Backtest Motoru (SMC + ADX + RVOL Simülasyonu)")
+    bt_ticker = st.selectbox("Backtest Hissesi", list(data_dict.keys()), key="bt_ticker")
+    min_score_bt = st.slider("Giriş İçin Min Kurumsal Skor", 50, 80, 65)
     
-    if st.button("Backtest'i Başlat"):
+    if st.button("Strateji Backtest'ini Çalıştır"):
         df_bt = data_dict[bt_ticker].copy()
-        df_bt['SMA_Fast'] = df_bt['Close'].rolling(fast_ma).mean()
-        df_bt['SMA_Slow'] = df_bt['Close'].rolling(slow_ma).mean()
+        trades = []
+        in_trade = False
+        entry_price = 0
+        stop_price = 0
+        target_price = 0
         
-        df_bt['Signal'] = 0
-        df_bt.loc[df_bt['SMA_Fast'] > df_bt['SMA_Slow'], 'Signal'] = 1
-        df_bt['Returns'] = df_bt['Close'].pct_change()
-        df_bt['Strategy_Returns'] = df_bt['Returns'] * df_bt['Signal'].shift(1)
-        
-        cum_buy_hold = (1 + df_bt['Returns']).cumprod()
-        cum_strategy = (1 + df_bt['Strategy_Returns']).cumprod()
-        
-        fig_bt = go.Figure()
-        fig_bt.add_trace(go.Scatter(x=df_bt.index, y=cum_buy_hold, name="AL & TUT Getirisi"))
-        fig_bt.add_trace(go.Scatter(x=df_bt.index, y=cum_strategy, name="SMA Strateji Getirisi"))
-        fig_bt.update_layout(template="plotly_dark", height=450)
-        
-        st.plotly_chart(fig_bt, use_container_width=True)
-        
-        tot_ret = (cum_strategy.iloc[-1] - 1) * 100
-        st.success(f"Strateji Toplam Getirisi: %{tot_ret:.2f}")
+        for i in range(60, len(df_bt)):
+            sub_df = df_bt.iloc[:i]
+            res = QualityWeightedEngine.process_ticker(bt_ticker, sub_df, df_xu100, regime_score=0.8)
+            
+            if res is None: continue
+            
+            current_close = float(df_bt['Close'].iloc[i])
+            
+            # Entry Simülasyonu
+            if not in_trade:
+                if res['Kurumsal Skor'] >= min_score_bt and res['Sinyal'] in ["AL 🟢", "GÜÇLÜ AL 🚀"]:
+                    in_trade = True
+                    entry_price = current_close
+                    stop_price = res['Stop Loss']
+                    target_price = res['Hedef']
+            # Exit Simülasyonu (Stop veya TP)
+            else:
+                if current_close <= stop_price:
+                    pnl = (stop_price - entry_price) / entry_price
+                    trades.append({'ExitDate': df_bt.index[i], 'PnL': pnl, 'Type': 'STOP 🔴'})
+                    in_trade = False
+                elif current_close >= target_price:
+                    pnl = (target_price - entry_price) / entry_price
+                    trades.append({'ExitDate': df_bt.index[i], 'PnL': pnl, 'Type': 'TP 🟢'})
+                    in_trade = False
+                    
+        if trades:
+            df_trades = pd.DataFrame(trades)
+            win_rate = (len(df_trades[df_trades['PnL'] > 0]) / len(df_trades)) * 100
+            tot_return = df_trades['PnL'].sum() * 100
+            
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Toplam İşlem", len(df_trades))
+            c2.metric("Kazanma Oranı (Win Rate)", f"%{win_rate:.1f}")
+            c3.metric("Kümülatif Strateji Getirisi", f"%{tot_return:.2f}")
+            
+            st.dataframe(df_trades, use_container_width=True)
+        else:
+            st.warning("Belirtilen kriterlerde geriye dönük tamamlanmış işlem bulunamadı.")
 
-# --- TAB 4: SANAL PORTFÖY VE ALIM-SATIM ROBOTU ---
+# --- TAB 4: SANAL PORTFÖY VE İŞLEM GEÇMİŞİ ROBOTU ---
 with tabs[3]:
-    st.subheader("🤖 Sanal Ticaret Simülasyonu & Portföy")
+    st.subheader("🤖 Sanal Portföy & İşlem Geçmişi")
     conn = sqlite3.connect("portfolio.db")
     c = conn.cursor()
     c.execute("SELECT cash FROM balance WHERE id=1")
@@ -417,7 +487,7 @@ with tabs[3]:
     
     with col_buy:
         st.markdown("### 🟢 Sanal Alım Yap")
-        trade_ticker = st.selectbox("Hisse", BIST100_LIST, key="trade_buy_t")
+        trade_ticker = st.selectbox("Hisse", list(data_dict.keys()), key="trade_buy_t")
         trade_qty = st.number_input("Adet", min_value=1, value=10, key="trade_buy_q")
         
         if st.button("Alım Emri Gir"):
@@ -432,9 +502,13 @@ with tabs[3]:
                     curr_amt, curr_avg = row
                     new_amt = curr_amt + trade_qty
                     new_avg = ((curr_amt * curr_avg) + total_cost) / new_amt
-                    c.execute("UPDATE portfolio SET amount=?, avg_price=? WHERE ticker=?", (new_amt, new_avg))
+                    c.execute("UPDATE portfolio SET amount=?, avg_price=? WHERE ticker=?", (new_amt, new_avg, trade_ticker))
                 else:
                     c.execute("INSERT INTO portfolio VALUES (?, ?, ?)", (trade_ticker, trade_qty, price))
+                
+                # History Kaydı
+                c.execute("INSERT INTO history (ticker, type, amount, price, pnl) VALUES (?, ?, ?, ?, ?)",
+                          (trade_ticker, 'BUY', trade_qty, price, 0.0))
                 conn.commit()
                 st.success(f"{trade_qty} adet {trade_ticker} ₺{price:.2f} fiyattan alındı!")
                 st.rerun()
@@ -450,19 +524,26 @@ with tabs[3]:
             
             if st.button("Satış Emri Gir"):
                 price = float(data_dict[sell_ticker]['Close'].iloc[-1])
-                c.execute("SELECT amount FROM portfolio WHERE ticker=?", (sell_ticker,))
-                curr_amt = c.fetchone()[0]
+                c.execute("SELECT amount, avg_price FROM portfolio WHERE ticker=?", (sell_ticker,))
+                row = c.fetchone()
+                curr_amt, avg_p = row[0], row[1]
                 
                 if sell_qty <= curr_amt:
                     total_gain = price * sell_qty
                     new_cash = cash + total_gain
+                    realized_pnl = (price - avg_p) * sell_qty
+                    
                     c.execute("UPDATE balance SET cash=? WHERE id=1", (new_cash,))
                     if sell_qty == curr_amt:
                         c.execute("DELETE FROM portfolio WHERE ticker=?", (sell_ticker,))
                     else:
                         c.execute("UPDATE portfolio SET amount=amount-? WHERE ticker=?", (sell_qty, sell_ticker))
+                    
+                    # History Kaydı
+                    c.execute("INSERT INTO history (ticker, type, amount, price, pnl) VALUES (?, ?, ?, ?, ?)",
+                              (sell_ticker, 'SELL', sell_qty, price, realized_pnl))
                     conn.commit()
-                    st.success(f"{sell_qty} adet {sell_ticker} ₺{price:.2f} fiyattan satıldı!")
+                    st.success(f"{sell_qty} adet {sell_ticker} ₺{price:.2f} fiyattan satıldı! Kar/Zarar: ₺{realized_pnl:.2f}")
                     st.rerun()
                 else:
                     st.error("Portföyünüzde bu kadar adet yok!")
@@ -470,14 +551,25 @@ with tabs[3]:
             st.info("Portföyünüzde henüz hisse bulunmuyor.")
 
     st.markdown("---")
-    st.markdown("### 💼 Portföy Durumu")
-    df_port_view = pd.read_sql_query("SELECT * FROM portfolio WHERE amount > 0", conn)
-    if not df_port_view.empty:
-        df_port_view['Anlık Fiyat'] = df_port_view['ticker'].apply(lambda x: float(data_dict[x]['Close'].iloc[-1]) if x in data_dict else 0.0)
-        df_port_view['Toplam Değer'] = df_port_view['amount'] * df_port_view['Anlık Fiyat']
-        df_port_view['Kar/Zarar (%)'] = ((df_port_view['Anlık Fiyat'] - df_port_view['avg_price']) / df_port_view['avg_price']) * 100
-        st.dataframe(df_port_view, use_container_width=True)
-    else:
-        st.write("Portföy boş.")
+    st.markdown("### 💼 Portföy Durumu ve İşlem Geçmişi")
+    
+    p_tab1, p_tab2 = st.tabs(["Açık Pozisyonlar", "📜 İşlem Geçmişi (Log)"])
+    
+    with p_tab1:
+        df_port_view = pd.read_sql_query("SELECT * FROM portfolio WHERE amount > 0", conn)
+        if not df_port_view.empty:
+            df_port_view['Anlık Fiyat'] = df_port_view['ticker'].apply(lambda x: float(data_dict[x]['Close'].iloc[-1]) if x in data_dict else 0.0)
+            df_port_view['Toplam Değer'] = df_port_view['amount'] * df_port_view['Anlık Fiyat']
+            df_port_view['Kar/Zarar (%)'] = ((df_port_view['Anlık Fiyat'] - df_port_view['avg_price']) / df_port_view['avg_price']) * 100
+            st.dataframe(df_port_view, use_container_width=True)
+        else:
+            st.write("Portföy boş.")
+            
+    with p_tab2:
+        df_hist = pd.read_sql_query("SELECT * FROM history ORDER BY timestamp DESC", conn)
+        if not df_hist.empty:
+            st.dataframe(df_hist, use_container_width=True)
+        else:
+            st.write("Henüz geçmiş işlem yok.")
         
     conn.close()
