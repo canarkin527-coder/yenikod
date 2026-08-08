@@ -521,29 +521,26 @@ def main():
         else:
             st.info("Kapanmış işlem bulunmuyor.")
 
+    # DÜZELTİLEN BÖLÜM: En kararlı, yalın buton yapısı
     with tab4:
         st.subheader("🧪 Geçmiş Günler Simülasyon Test Alanı")
-        # DÜZELTİLEN BÖLÜM: Form yapısına geçildi
-        with st.form(key='sim_form'):
-            sim_days = st.slider("Simülasyon Gün Sayısı", 5, 120, 30)
-            submit_button = st.form_submit_button(label='🧪 Simülasyonu Çalıştır', use_container_width=True)
-            
-        if submit_button:
-            with st.spinner("Simülasyon Koşuluyor..."):
+        sim_days = st.slider("Simülasyon Gün Sayısı", 5, 120, 30, key="sim_slider")
+        
+        if st.button("🧪 Simülasyonu Çalıştır"):
+            with st.spinner("Simülasyon İşleniyor..."):
                 d_dict = st.session_state.get('data_dict', {})
                 df_x = st.session_state.get('df_xu100', None)
                 
                 if not d_dict:
-                    st.error("Önce ana ekrandaki 'Canlı Tarama ve Motoru Çalıştır' butonuna basarak verileri yüklemelisiniz.")
+                    st.warning("Veriler henüz yüklenmemiş. Lütfen sol menüden 'Canlı Tarama'yı çalıştırın.")
                 else:
                     sim_trades, final_val = DecisionAndPaperEngineV63.run_backtest_simulation(d_dict, df_x, sim_days)
-                    st.success(f"Simülasyon Tamamlandı! Simülasyon Sonrası Varlık Değeri: {final_val:,.2f} ₺")
+                    st.success(f"Simülasyon Tamamlandı! Son Varlık: {final_val:,.2f} ₺")
                     
                     if not sim_trades.empty:
-                        st.dataframe(sim_trades, use_container_width=True)
+                        st.dataframe(sim_trades)
                     else:
-                        st.info("Simülasyon tamamlandı ancak bu aralıkta gerçekleşen bir işlem kaydı oluşmadı.")
+                        st.info("Simülasyon bitti. Bu periyotta gerçekleşen işlem yok.")
 
 if __name__ == "__main__":
     main()
-
