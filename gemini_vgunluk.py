@@ -302,7 +302,7 @@ class SimulationEngineV63:
                 if day_idx in df.index and sym not in sim_positions:
                     row = df.loc[day_idx]
                     score = row['Quant_Score']
-                    if score >= 70.0: # Simülasyon için esnek eşik
+                    if score >= 60.0: # Simülasyon için esnek eşik
                         price = row['Close']
                         atr = row['ATR']
                         stop_loss = price - (1.5 * atr)
