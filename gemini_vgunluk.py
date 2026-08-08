@@ -171,7 +171,7 @@ class VolumeProfileEngine:
         return float(avwap.iloc[0]) if isinstance(avwap, pd.Series) else float(avwap)
 
 # ==========================================
-# 3. YENİ AĞIRLIKLANDIRILMIŞ VE FİLTRELİ SKORLAMA MOTORU
+# 3. HASSAS HASSASLAŞTIRILMIŞ VE KALİTE ODAKLI SKORLAMA MOTORU
 # ==========================================
 
 class QualityWeightedEngine:
@@ -199,8 +199,7 @@ class QualityWeightedEngine:
         poc = VolumeProfileEngine.calculate_vpvr_poc(df)
         avwap = VolumeProfileEngine.calculate_avwap(df)
         
-        # --- KATMANLI SKORLAMA SİSTEMİ ---
-        # 1. ADIM: Trend & Hacim Teyidi (Maksimum 35 Puan)
+        # --- TABAN SKOR HESABI ---
         trend_vol_score = 0.0
         if adx >= 25: trend_vol_score += 15.0
         elif adx >= 18: trend_vol_score += 8.0
@@ -210,15 +209,15 @@ class QualityWeightedEngine:
         
         if rs_score > 1.0: trend_vol_score += 8.0
         
-        # 2. ADIM: Giriş Bölgesi & SMC (Maksimum 35 Puan)
+        # SMC Skorlama
         smc_score = 0.0
         if smc["Zone"] == "DISCOUNT 🟢": smc_score += 15.0
         elif smc["Zone"] == "EQUILIBRIUM": smc_score += 5.0
         
-        if smc["OB_Mitigated"]: smc_score += 12.0
+        if smc["OB_Mitigated"]: smc_score += 15.0  # OB Test bonusu artırıldı
         if smc["MSS"]: smc_score += 8.0
         
-        # 3. ADIM: İndikatör & Hacim Profili Teyidi (Maksimum 30 Puan)
+        # Indikatör Teyidi
         tech_score = 0.0
         if 40 <= rsi <= 65: tech_score += 10.0
         if last_price > avwap: tech_score += 10.0
@@ -226,46 +225,64 @@ class QualityWeightedEngine:
         
         raw_score = trend_vol_score + smc_score + tech_score
         
-        # --- GATEKEEPER / ELEME KURALLARI ---
+        # --- KADEMELİ VE HASSAS ELEME/CEZA MEKANİZMASI ---
         warnings = []
+        is_candidate_setup = (smc["Zone"] == "DISCOUNT 🟢" and smc["OB_Mitigated"])
+        
+        # 1. ADX Kademeli Ceza
         if adx < 15:
-            raw_score *= 0.80  # Trend çok zayıfsa puan %20 düşürülür
-            warnings.append("⚠️ Zayıf Trend (ADX < 15)")
+            penalty_adx = 0.90 if is_candidate_setup else 0.80  # Aday Setup ise ceza hafifletilir
+            raw_score *= penalty_adx
+            warnings.append("⚠️ Zayıf Trend")
             
-        if rvol < 0.60:
-            raw_score *= 0.85  # Hacim çok düşükse puan kırılır
-            warnings.append("⚠️ Hacimsiz (RVOL < 0.6)")
+        # 2. RVOL Kademeli Yumuşatma (0.40 - 0.79 Arası Doğrusal Cezalandırma)
+        if rvol < 0.40:
+            raw_score *= 0.80
+            warnings.append("⚠️ Çok Düşük Hacim")
+        elif 0.40 <= rvol < 0.80:
+            # Doğrusal Çarpan: 0.40 iken %10 ceza, 0.79 iken %2 ceza
+            gradual_mult = 0.90 + (rvol - 0.40) * (0.08 / 0.40)
+            if is_candidate_setup: 
+                gradual_mult = min(1.0, gradual_mult + 0.05) # Dip koruması
+            raw_score *= gradual_mult
+            if not is_candidate_setup:
+                warnings.append("💡 Akümülasyon Hacmi")
             
         if rsi > 70:
-            raw_score = min(raw_score, 75.0)  # Aşırı alım bölgesinde tavan puan
-            warnings.append("⚠️ Aşırı Alım (RSI > 70)")
+            raw_score = min(raw_score, 75.0)
+            warnings.append("⚠️ Aşırı Alım")
             
         if smc["Zone"] == "PREMIUM 🔴":
             warnings.append("🔴 Premium Bölge")
 
         final_score = round(min(100.0, max(0.0, raw_score)), 1)
         
-        # --- TEKNİK KALİTE YILDIZ HESAPLAMA ---
+        # --- TEKNİK KALİTE YILDIZ HESABI ---
         quality_stars = 1
-        if adx >= 25: quality_stars += 1
-        if rvol >= 1.0: quality_stars += 1
-        if smc["Zone"] == "DISCOUNT 🟢" or smc["OB_Mitigated"]: quality_stars += 1
-        if rs_score >= 1.05 and rsi <= 68: quality_stars += 1
+        if adx >= 22: quality_stars += 1
+        if rvol >= 0.8: quality_stars += 1
+        if smc["Zone"] == "DISCOUNT 🟢": quality_stars += 1
+        if smc["OB_Mitigated"]: quality_stars += 1
         
         star_str = "⭐" * quality_stars + "☆" * (5 - quality_stars)
         
-        # Sinyal
+        # --- AKILLI SİNYAL ALGORİTMASI ---
         signal = "NÖTR ⚪"
-        if final_score >= 80 and quality_stars >= 4: signal = "GÜÇLÜ AL 🚀"
-        elif final_score >= 65 and quality_stars >= 3: signal = "AL 🟢"
-        elif final_score <= 40: signal = "SAT 🔴"
+        if final_score >= 75 and quality_stars >= 4:
+            signal = "GÜÇLÜ AL 🚀"
+        elif final_score >= 62 and quality_stars >= 3:
+            signal = "AL 🟢"
+        elif is_candidate_setup and final_score >= 55:
+            signal = "ADAY SETUP 🟡"  # Dip yapmış, hacim bekleyen hisseler!
+        elif final_score <= 40:
+            signal = "SAT 🔴"
         
         return {
             "Ticker": ticker,
             "Kurumsal Skor": final_score,
             "Teknik Kalite": star_str,
             "Sinyal": signal,
-            "Ufuk / Uyaralar": " | ".join(warnings) if warnings else "Teyitli ✅",
+            "Ufuk / Uyarılar": " | ".join(warnings) if warnings else "Teyitli ✅",
             "Son Fiyat": round(last_price, 2),
             "Zone": smc["Zone"],
             "OB Test": "EVET ✅" if smc["OB_Mitigated"] else "HAYIR ❌",
@@ -313,7 +330,7 @@ tabs = st.tabs(["📊 Tarama & Kalite Analizi", "📈 Gelişmiş Grafik", "🧪 
 with tabs[0]:
     st.subheader("⚡ Ağırlıklandırılmış Kalite Taraması")
     if st.button("Kalite Odaklı Taramayı Çalıştır", use_container_width=True):
-        with st.spinner("Katmanlı hiyerarşi analizi yapılıyor..."):
+        with st.spinner("Katmanlı hiyerarşi ve hassas kalite analizi yapılıyor..."):
             results = []
             for t, df in data_dict.items():
                 res = QualityWeightedEngine.process_ticker(t, df, df_xu100, regime_score=0.8)
@@ -415,7 +432,7 @@ with tabs[3]:
                     curr_amt, curr_avg = row
                     new_amt = curr_amt + trade_qty
                     new_avg = ((curr_amt * curr_avg) + total_cost) / new_amt
-                    c.execute("UPDATE portfolio SET amount=?, avg_price=? WHERE ticker=?", (new_amt, new_avg, trade_ticker))
+                    c.execute("UPDATE portfolio SET amount=?, avg_price=? WHERE ticker=?", (new_amt, new_avg))
                 else:
                     c.execute("INSERT INTO portfolio VALUES (?, ?, ?)", (trade_ticker, trade_qty, price))
                 conn.commit()
