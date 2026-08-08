@@ -5,13 +5,12 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import yfinance as yf
 import sqlite3
-from datetime import datetime
 
 # ==========================================
 # 0. STREAMLIT CONFIGURATION & DATABASE
 # ==========================================
 st.set_page_config(
-    page_title="v44.2 Quant Master Engine - Complete Desk",
+    page_title="v44.3 Quant Master Engine - Quality Weighted Desk",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -28,7 +27,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Veritabanı Kurulumu (Sanal Alım-Satım Robotu İçin)
 def init_db():
     conn = sqlite3.connect("portfolio.db")
     c = conn.cursor()
@@ -36,8 +34,6 @@ def init_db():
                  (ticker TEXT PRIMARY KEY, amount REAL, avg_price REAL)''')
     c.execute('''CREATE TABLE IF NOT EXISTS balance 
                  (id INTEGER PRIMARY KEY, cash REAL)''')
-    
-    # Başlangıç Sanal Bakiye (100.000 TL)
     c.execute("SELECT count(*) FROM balance")
     if c.fetchone()[0] == 0:
         c.execute("INSERT INTO balance (id, cash) VALUES (1, 100000.0)")
@@ -172,14 +168,13 @@ class VolumeProfileEngine:
         sub = df.iloc[-60:]
         tp = (sub['High'] + sub['Low'] + sub['Close']) / 3.0
         avwap = (tp * sub['Volume']).sum() / (sub['Volume'].sum() + 1e-9)
-        val = avwap
-        return float(val.iloc[0]) if isinstance(val, pd.Series) else float(val)
+        return float(avwap.iloc[0]) if isinstance(avwap, pd.Series) else float(avwap)
 
 # ==========================================
-# 3. GELİŞMİŞ SKORLAMA MOTORU
+# 3. YENİ AĞIRLIKLANDIRILMIŞ VE FİLTRELİ SKORLAMA MOTORU
 # ==========================================
 
-class MultiFactorEngineV441:
+class QualityWeightedEngine:
     @staticmethod
     def process_ticker(ticker: str, df: pd.DataFrame, df_xu100: pd.DataFrame, regime_score: float) -> dict:
         if len(df) < 60 or df_xu100 is None or len(df_xu100) < 60: 
@@ -204,35 +199,73 @@ class MultiFactorEngineV441:
         poc = VolumeProfileEngine.calculate_vpvr_poc(df)
         avwap = VolumeProfileEngine.calculate_avwap(df)
         
-        score = 50.0
-        score += regime_score * 10.0
+        # --- KATMANLI SKORLAMA SİSTEMİ ---
+        # 1. ADIM: Trend & Hacim Teyidi (Maksimum 35 Puan)
+        trend_vol_score = 0.0
+        if adx >= 25: trend_vol_score += 15.0
+        elif adx >= 18: trend_vol_score += 8.0
         
-        if smc["Zone"] == "DISCOUNT 🟢": score += 12
-        if smc["OB_Mitigated"]: score += 10
-        if smc["MSS"]: score += 8
-        if smc["Zone"] == "PREMIUM 🔴": score -= 8
+        if rvol >= 1.2: trend_vol_score += 12.0
+        elif rvol >= 0.8: trend_vol_score += 6.0
         
-        if 45 <= rsi <= 65: score += 8
-        elif rsi > 75: score -= 5
+        if rs_score > 1.0: trend_vol_score += 8.0
         
-        if adx > 25: score += 7
-        if rvol > 1.2: score += 8
-        if rs_score > 1.05: score += 7
+        # 2. ADIM: Giriş Bölgesi & SMC (Maksimum 35 Puan)
+        smc_score = 0.0
+        if smc["Zone"] == "DISCOUNT 🟢": smc_score += 15.0
+        elif smc["Zone"] == "EQUILIBRIUM": smc_score += 5.0
         
-        if last_price > avwap: score += 5
-        if last_price > poc: score += 5
+        if smc["OB_Mitigated"]: smc_score += 12.0
+        if smc["MSS"]: smc_score += 8.0
         
-        final_score = round(min(100.0, max(0.0, score)), 1)
+        # 3. ADIM: İndikatör & Hacim Profili Teyidi (Maksimum 30 Puan)
+        tech_score = 0.0
+        if 40 <= rsi <= 65: tech_score += 10.0
+        if last_price > avwap: tech_score += 10.0
+        if last_price > poc: tech_score += 10.0
         
+        raw_score = trend_vol_score + smc_score + tech_score
+        
+        # --- GATEKEEPER / ELEME KURALLARI ---
+        warnings = []
+        if adx < 15:
+            raw_score *= 0.80  # Trend çok zayıfsa puan %20 düşürülür
+            warnings.append("⚠️ Zayıf Trend (ADX < 15)")
+            
+        if rvol < 0.60:
+            raw_score *= 0.85  # Hacim çok düşükse puan kırılır
+            warnings.append("⚠️ Hacimsiz (RVOL < 0.6)")
+            
+        if rsi > 70:
+            raw_score = min(raw_score, 75.0)  # Aşırı alım bölgesinde tavan puan
+            warnings.append("⚠️ Aşırı Alım (RSI > 70)")
+            
+        if smc["Zone"] == "PREMIUM 🔴":
+            warnings.append("🔴 Premium Bölge")
+
+        final_score = round(min(100.0, max(0.0, raw_score)), 1)
+        
+        # --- TEKNİK KALİTE YILDIZ HESAPLAMA ---
+        quality_stars = 1
+        if adx >= 25: quality_stars += 1
+        if rvol >= 1.0: quality_stars += 1
+        if smc["Zone"] == "DISCOUNT 🟢" or smc["OB_Mitigated"]: quality_stars += 1
+        if rs_score >= 1.05 and rsi <= 68: quality_stars += 1
+        
+        star_str = "⭐" * quality_stars + "☆" * (5 - quality_stars)
+        
+        # Sinyal
         signal = "NÖTR ⚪"
-        if final_score >= 78: signal = "GÜÇLÜ AL 🚀"
-        elif final_score >= 62: signal = "AL 🟢"
+        if final_score >= 80 and quality_stars >= 4: signal = "GÜÇLÜ AL 🚀"
+        elif final_score >= 65 and quality_stars >= 3: signal = "AL 🟢"
         elif final_score <= 40: signal = "SAT 🔴"
         
         return {
             "Ticker": ticker,
             "Kurumsal Skor": final_score,
+            "Teknik Kalite": star_str,
             "Sinyal": signal,
+            "Ufuk / Uyaralar": " | ".join(warnings) if warnings else "Teyitli ✅",
             "Son Fiyat": round(last_price, 2),
             "Zone": smc["Zone"],
             "OB Test": "EVET ✅" if smc["OB_Mitigated"] else "HAYIR ❌",
@@ -240,18 +273,16 @@ class MultiFactorEngineV441:
             "ADX (14)": round(adx, 1),
             "RVOL": round(rvol, 2),
             "RS (BIST)": round(rs_score, 2),
-            "Stop Loss (2x ATR)": stop_loss,
-            "Hedef (3.5x ATR)": target_price,
-            "Risk/Ödül (R:R)": rr_ratio,
-            "POC": round(poc, 2),
-            "AVWAP": round(avwap, 2)
+            "Stop Loss": stop_loss,
+            "Hedef": target_price,
+            "R:R Ratio": rr_ratio,
         }
 
 # ==========================================
-# 4. VERİ İNDİRME MEKANİZMASI
+# 4. VERİ İNDİRME VE SEKMELER
 # ==========================================
 
-BIST100_LIST = ["GUBRF", "YEOTK", "MAVI", "DOHOL", "TUPRS", "ENJSA", "ASELS", "THYAO", "BIMAS", "AKBNK", "EREGL", "SAHOL", "KCHOL", "SISE"]
+BIST100_LIST = ["GUBRF", "YEOTK", "MAVI", "DOHOL", "TUPRS", "ENJSA", "ASELS", "THYAO", "BIMAS", "AKBNK", "EREGL", "SAHOL", "SISE"]
 
 @st.cache_data(ttl=1800)
 def fetch_data():
@@ -264,7 +295,7 @@ def fetch_data():
             df = raw[f"{t}.IS"][['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
             if not df.empty: data_dict[t] = df
         except: continue
-    
+        
     try:
         df_xu100 = raw["XU100.IS"][['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
     except:
@@ -274,38 +305,34 @@ def fetch_data():
 
 data_dict, df_xu100 = fetch_data()
 
-# ==========================================
-# 5. STREAMLIT SEKMELİ ARAYÜZ (TÜM MODÜLLER)
-# ==========================================
+st.title("🏛️ Quant Master Engine - Kalite Filtreli BIST 100")
 
-st.title("🏛️ Quant Master Engine - BIST 100 Desk")
-
-tabs = st.tabs(["📊 Tarama & Skorlama", "📈 Gelişmiş Grafik", "🧪 Backtest Motoru", "🤖 Sanal Portföy / Robot"])
+tabs = st.tabs(["📊 Tarama & Kalite Analizi", "📈 Gelişmiş Grafik", "🧪 Backtest Motoru", "🤖 Sanal Portföy / Robot"])
 
 # --- TAB 1: TARAMA VE SKORLAMA ---
 with tabs[0]:
-    st.subheader("⚡ BIST 100 Çoklu Faktör Taraması")
-    if st.button("Taramayı Çalıştır", use_container_width=True):
-        with st.spinner("Hisseler analiz ediliyor..."):
+    st.subheader("⚡ Ağırlıklandırılmış Kalite Taraması")
+    if st.button("Kalite Odaklı Taramayı Çalıştır", use_container_width=True):
+        with st.spinner("Katmanlı hiyerarşi analizi yapılıyor..."):
             results = []
             for t, df in data_dict.items():
-                res = MultiFactorEngineV441.process_ticker(t, df, df_xu100, regime_score=0.8)
+                res = QualityWeightedEngine.process_ticker(t, df, df_xu100, regime_score=0.8)
                 if res: results.append(res)
             if results:
                 df_res = pd.DataFrame(results).sort_values(by="Kurumsal Skor", ascending=False)
-                st.session_state['df_v442'] = df_res
+                st.session_state['df_v443'] = df_res
 
-    if 'df_v442' in st.session_state:
+    if 'df_v443' in st.session_state:
         st.dataframe(
-            st.session_state['df_v442'],
+            st.session_state['df_v443'],
             column_config={
                 "Kurumsal Skor": st.column_config.ProgressColumn("Skor", min_value=0, max_value=100, format="%.1f"),
                 "Son Fiyat": st.column_config.NumberColumn(format="₺%.2f"),
-                "Stop Loss (2x ATR)": st.column_config.NumberColumn(format="₺%.2f"),
-                "Hedef (3.5x ATR)": st.column_config.NumberColumn(format="₺%.2f"),
+                "Stop Loss": st.column_config.NumberColumn(format="₺%.2f"),
+                "Hedef": st.column_config.NumberColumn(format="₺%.2f"),
             },
             use_container_width=True,
-            height=400
+            height=450
         )
 
 # --- TAB 2: GELİŞMİŞ GRAFİK ---
@@ -316,20 +343,14 @@ with tabs[1]:
     if selected_ticker in data_dict:
         df_plot = data_dict[selected_ticker]
         poc_price = VolumeProfileEngine.calculate_vpvr_poc(df_plot)
-        avwap_price = VolumeProfileEngine.calculate_avwap(df_plot)
         
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
-        
-        # Mum Grafiği
         fig.add_trace(go.Candlestick(
             x=df_plot.index, open=df_plot['Open'], high=df_plot['High'],
             low=df_plot['Low'], close=df_plot['Close'], name='Fiyat'
         ), row=1, col=1)
         
-        # POC ve AVWAP Çizgileri
         fig.add_hline(y=poc_price, line_dash="dash", line_color="orange", annotation_text="POC Level", row=1, col=1)
-        
-        # Hacim
         fig.add_trace(go.Bar(x=df_plot.index, y=df_plot['Volume'], name='Hacim', marker_color='rgba(49, 130, 206, 0.5)'), row=2, col=1)
         
         fig.update_layout(template="plotly_dark", height=600, margin=dict(l=20, r=20, t=20, b=20))
@@ -368,7 +389,6 @@ with tabs[2]:
 # --- TAB 4: SANAL PORTFÖY VE ALIM-SATIM ROBOTU ---
 with tabs[3]:
     st.subheader("🤖 Sanal Ticaret Simülasyonu & Portföy")
-    
     conn = sqlite3.connect("portfolio.db")
     c = conn.cursor()
     c.execute("SELECT cash FROM balance WHERE id=1")
@@ -386,11 +406,9 @@ with tabs[3]:
         if st.button("Alım Emri Gir"):
             price = float(data_dict[trade_ticker]['Close'].iloc[-1])
             total_cost = price * trade_qty
-            
             if cash >= total_cost:
                 new_cash = cash - total_cost
                 c.execute("UPDATE balance SET cash=? WHERE id=1", (new_cash,))
-                
                 c.execute("SELECT amount, avg_price FROM portfolio WHERE ticker=?", (trade_ticker,))
                 row = c.fetchone()
                 if row:
@@ -400,7 +418,6 @@ with tabs[3]:
                     c.execute("UPDATE portfolio SET amount=?, avg_price=? WHERE ticker=?", (new_amt, new_avg, trade_ticker))
                 else:
                     c.execute("INSERT INTO portfolio VALUES (?, ?, ?)", (trade_ticker, trade_qty, price))
-                
                 conn.commit()
                 st.success(f"{trade_qty} adet {trade_ticker} ₺{price:.2f} fiyattan alındı!")
                 st.rerun()
@@ -409,7 +426,6 @@ with tabs[3]:
                 
     with col_sell:
         st.markdown("### 🔴 Sanal Satış Yap")
-        # Portföydeki Hisseleri Getir
         df_port = pd.read_sql_query("SELECT * FROM portfolio WHERE amount > 0", conn)
         if not df_port.empty:
             sell_ticker = st.selectbox("Satılacak Hisse", df_port['ticker'].tolist())
@@ -424,12 +440,10 @@ with tabs[3]:
                     total_gain = price * sell_qty
                     new_cash = cash + total_gain
                     c.execute("UPDATE balance SET cash=? WHERE id=1", (new_cash,))
-                    
                     if sell_qty == curr_amt:
                         c.execute("DELETE FROM portfolio WHERE ticker=?", (sell_ticker,))
                     else:
                         c.execute("UPDATE portfolio SET amount=amount-? WHERE ticker=?", (sell_qty, sell_ticker))
-                        
                     conn.commit()
                     st.success(f"{sell_qty} adet {sell_ticker} ₺{price:.2f} fiyattan satıldı!")
                     st.rerun()
@@ -450,4 +464,3 @@ with tabs[3]:
         st.write("Portföy boş.")
         
     conn.close()
-
