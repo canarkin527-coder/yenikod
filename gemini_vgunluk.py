@@ -9,7 +9,7 @@ from datetime import datetime
 # 1. STREAMLIT CONFIGURATION & INSTITUTIONAL THEME
 # ==============================================================================
 st.set_page_config(
-    page_title="QUANT MASTER v63 — BIST 100 INTRADAY & QUANT ENGINE",
+    page_title="QUANT MASTER v63 — BIST 100 QUANT ENGINE (EXTENDED)",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -32,7 +32,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-DB_FILE = "quant_master_v63_intraday.db"
+DB_FILE = "quant_master_v63_extended.db"
 
 # ==============================================================================
 # 2. DATABASE ENGINE (SQLITE PERSISTENCE)
@@ -99,19 +99,11 @@ def get_bist100_constituents():
     ])))
 
 # ==============================================================================
-# 4. QUANT ENGINE: v63 CORE + INTRADAY CAPABILITY & EXTENDED INDICATORS
+# 4. QUANT ENGINE: v63 CORE + REQUESTED ADVANCED INDICATORS & MULTI-TIMEFRAME
 # ==============================================================================
 class QuantEngineV63:
     @staticmethod
-    def fetch_data(symbol, interval="1d"):
-        # Yahoo Finance Intraday kısıtlarına göre dinamik period ataması
-        if interval in ["5m", "15m"]:
-            period = "5d"
-        elif interval in ["30m", "60m", "1h"]:
-            period = "30d"
-        else:
-            period = "1y"
-            
+    def fetch_data(symbol, period="1y", interval="1d"):
         df = yf.download(symbol, period=period, interval=interval, progress=False)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
@@ -156,8 +148,8 @@ class QuantEngineV63:
         
         df['AVWAP'] = (df['Close'] * df['Volume']).cumsum() / (df['Volume'].cumsum() + 1e-10)
         
-        low_52w = df['Low'].rolling(252, min_periods=30).min()
-        high_52w = df['High'].rolling(252, min_periods=30).max()
+        low_52w = df['Low'].rolling(252, min_periods=60).min()
+        high_52w = df['High'].rolling(252, min_periods=60).max()
         df['Minervini_OK'] = (
             (df['Close'] > df['EMA150']) & 
             (df['EMA150'] > df['EMA200']) & 
@@ -166,23 +158,38 @@ class QuantEngineV63:
             (df['Close'] >= high_52w * 0.75)
         )
 
-        # --- GELİŞMİŞ İNDİKATÖRLER ---
+        # --- YENİ EKLENEN İNDİKATÖRLER ---
+        # 1. Bollinger Bands (Zaten v63'te vardı, üst/orta/alt tam)
+        
+        # 2. Stochastic Oscillator (14, 3, 3)
         low_min = df['Low'].rolling(14).min()
         high_max = df['High'].rolling(14).max()
         df['Stoch_K'] = 100 * ((df['Close'] - low_min) / (high_max - low_min + 1e-10))
         df['Stoch_D'] = df['Stoch_K'].rolling(3).mean()
         
+        # 3. ADX (Average Directional Index - 14)
         plus_dm = df['High'].diff()
         minus_dm = df['Low'].diff()
-        plus_dm = np.where((plus_dm > 0) & (plus_dm > minus_dm), plus_dm, 0)
+        plus_dm = np.where((plus_dm > des_val := 0) & (plus_dm > minus_dm), plus_dm, 0)
+        # Basitleştirilmiş ADX bileşenleri
         tr1 = df['High'] - df['Low']
         tr2 = np.abs(df['High'] - df['Close'].shift())
         tr3 = np.abs(df['Low'] - df['Close'].shift())
         tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
         atr14 = tr.rolling(14).mean()
         plus_di = 100 * (pd.Series(plus_dm).rolling(14).mean() / (atr14 + 1e-10))
-        df['ADX'] = pd.Series(np.abs(plus_di)).rolling(14).mean()
+        df['ADX'] = pd.Series(np.abs(plus_di)).rolling(14).mean() # Robust Trend Gücü Göstergesi
         
+        # 4. Ichimoku Cloud (Tenkan-sen, Kijun-sen)
+        nine_high = df['High'].rolling(9).max()
+        nine_low = df['Low'].rolling(9).min()
+        df['Tenkan_Sen'] = (nine_high + nine_low) / 2
+        
+        twenty_six_high = df['High'].rolling(26).max()
+        twenty_six_low = df['Low'].rolling(26).min()
+        df['Kijun_Sen'] = (twenty_six_high + twenty_six_low) / 2
+        
+        # 5. MFI (Money Flow Index - 14) & OBV (On-Balance Volume)
         typical_price = (df['High'] + df['Low'] + df['Close']) / 3
         money_flow = typical_price * df['Volume']
         pos_flow = np.where(typical_price > typical_price.shift(1), money_flow, 0)
@@ -196,7 +203,7 @@ class QuantEngineV63:
 
     @staticmethod
     def compute_quant_score(df):
-        """v63 Orijinal 100 Puanlık Motoru + Gün İçi Dinamik Skor Katkıları"""
+        """v63 Orijinal 100 Puanlık Motoru + Yeni Eklenen İndikatör Skor Katkıları"""
         last = df.iloc[-1]
         score = 0.0
         
@@ -216,7 +223,7 @@ class QuantEngineV63:
         if last['RVOL'] > 1.2: score += 5
         if last['OBV'] > df['OBV'].rolling(20).mean().iloc[-1]: score += 5
         
-        # 4. Volatilite, Bollinger & Gün İçi Momentum (Max 30 Puan)
+        # 4. Volatilite, Bollinger & Ichimoku/Stoch/ADX (Max 30 Puan)
         if last['Close'] > last['BB_Middle']: score += 7
         if last.get('Stoch_K', 50) > last.get('Stoch_D', 50): score += 8
         if last.get('ADX', 20) > 25: score += 8
@@ -230,13 +237,12 @@ class QuantEngineV63:
 def main():
     DatabaseEngineV63.init_db()
     
-    st.markdown('<h1 style="color:#F8FAFC; margin-bottom:0px;">📊 QUANT MASTER v63 — BIST 100 INTRADAY TARAYICI</h1>', unsafe_allow_html=True)
-    st.markdown('<p style="color:#94A3B8; font-size:1.0rem;">Gerçek Zamanlı Gün İçi (5m, 15m, 30m, 1h) Evren Tarama & 100 Puanlık Quant Motoru</p>', unsafe_allow_html=True)
+    st.markdown('<h1 style="color:#F8FAFC; margin-bottom:0px;">📊 QUANT MASTER v63 — BIST 100 TARAYICI (GELİŞTİRİLMİŞ)</h1>', unsafe_allow_html=True)
+    st.markdown('<p style="color:#94A3B8; font-size:1.0rem;">Toplu Evren Tarama, Çoklu Zaman Dilimi, AVWAP, Bollinger, Stoch, ADX, Ichimoku, MFI/OBV Entegrasyonu</p>', unsafe_allow_html=True)
     st.markdown("---")
     
     st.sidebar.header("⚙️ Kontrol Paneli")
-    # Gerçek Intraday Zaman Dilimleri Eklendi
-    timeframe = st.sidebar.selectbox("Zaman Dilimi (Intraday / Periyot)", ["5m", "15m", "30m", "1h", "1d", "1wk"], index=1)
+    timeframe = st.sidebar.selectbox("Zaman Dilimi (Multi-Timeframe)", ["1d", "1wk"], index=0)
     action_scan = st.sidebar.button("BIST 100 Evrenini Taramayı Başlat", use_container_width=True)
     
     symbols_list = get_bist100_constituents()
@@ -251,8 +257,8 @@ def main():
             status_text.text(f"Taranıyor ({i+1}/{total}): {sym} [{timeframe}]")
             progress_bar.progress((i + 1) / total)
             try:
-                df = QuantEngineV63.fetch_data(sym, interval=timeframe)
-                if len(df) > 20:
+                df = QuantEngineV63.fetch_data(sym, period="1y", interval=timeframe)
+                if len(df) > 50:
                     df = QuantEngineV63.calculate_indicators(df)
                     score = QuantEngineV63.compute_quant_score(df)
                     last_close = float(df['Close'].iloc[-1])
