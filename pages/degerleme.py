@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import streamlit as st
 import yfinance as yf
@@ -6,8 +7,8 @@ st.set_page_config(page_title="BİST Değerleme ve Tarama Modeli", layout="wide"
 
 st.title("📊 BİST Hisseleri Otomatik Değerleme ve Fiyat Tablosu")
 st.write(
-    "Bu program, BİST hisselerinin verilerini çekerek belirlediğiniz model"
-    " formüllerine göre analiz eder."
+    "Bu program, BİST hisselerinin bilançolarını ve piyasa verilerini çekerek"
+    " özel modellerinize göre analiz eder."
 )
 
 # Test edilebilecek popüler BİST hisseleri
@@ -26,33 +27,72 @@ def veri_cek(hisse_listesi):
   for ticker in hisse_listesi:
     try:
       h = yf.Ticker(ticker)
-      # Hızlı veri almak için history veya fast_info kullanabiliriz
+
+      # Anlık Fiyat
       hist = h.history(period="1d")
       fiyat = (
           hist["Close"].iloc[-1]
           if not hist.empty
           else h.info.get("currentPrice", 0)
       )
-      info = h.info
 
+      info = h.info
       piyasa_degeri = info.get("marketCap", 0)
-      ozsermaye = info.get("bookValue", 0)
+
+      # Finansal Bilanço Kalemleri (Özsermaye ve Net Kâr çekme denemesi)
+      # yfinance balanced sheet veya info üzerinden güvenli çekim
+      ozsermaye = info.get("totalStockholderEquity", 0)
+      net_kar = info.get("netIncomeToCommon", 0)
+
+      # Eğer info'da yoksa balance_sheet'ten okumaya çalışalım
+      if not ozsermaye or ozsermaye == 0:
+        try:
+          bs = h.balance_sheet
+          if not bs.empty:
+            ozsermaye = bs.loc["Stockholders Equity"].iloc[0]
+        except:
+          ozsermaye = 0
+
+      if not net_kar or net_kar == 0:
+        try:
+          financials = h.financials
+          if not financials.empty:
+            net_kar = financials.loc["Net Income"].iloc[0]
+        except:
+          net_kar = 0
 
       data_list.append({
           "Hisse": ticker.replace(".IS", ""),
           "Fiyat (TL)": round(fiyat, 2) if fiyat else 0,
           "Piyasa Değeri (TL)": piyasa_degeri,
-          "Defter Değeri / Hisse": ozsermaye,
+          "Öz Sermaye (TL)": ozsermaye if ozsermaye else 0,
+          "Net Kâr (TL)": net_kar if net_kar else 0,
       })
     except Exception as e:
-      # Hata olursa tabloda boş kalmasın diye en azından ismi ekleyelim
       data_list.append({
           "Hisse": ticker.replace(".IS", ""),
           "Fiyat (TL)": 0,
           "Piyasa Değeri (TL)": 0,
-          "Defter Değeri / Hisse": 0,
+          "Öz Sermaye (TL)": 0,
+          "Net Kâr (TL)": 0,
       })
-  return pd.DataFrame(data_list)
+
+  df = pd.DataFrame(data_list)
+
+  # Özsermaye / Net Kâr ve konuştuğumuz Model Hesaplaması (Özsermaye / Net Kâr * 10)
+  df["Öz Sermaye / Net Kâr"] = np.where(
+      df["Net Kâr (TL)"] != 0,
+      (df["Öz Sermaye (TL)"] / df["Net Kâr (TL)"]).round(2),
+      np.nan,
+  )
+
+  df["Model Hedef Skoru"] = np.where(
+      df["Net Kâr (TL)"] != 0,
+      ((df["Öz Sermaye (TL)"] / df["Net Kâr (TL)"]) * 10).round(2),
+      np.nan,
+  )
+
+  return df
 
 
 if st.button("Verileri Güncelle ve Modeli Çalıştır"):
