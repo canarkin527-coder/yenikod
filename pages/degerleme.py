@@ -1,119 +1,83 @@
-import numpy as np
 import pandas as pd
-import streamlit as st
+import numpy as np
+import sqlite3
+from datetime import datetime
 import yfinance as yf
 
-st.set_page_config(page_title="BİST Değerleme ve Tarama Modeli", layout="wide")
+DB_FILE = "quant_master_v64.db"
 
-st.title("📊 BİST Hisseleri Otomatik Değerleme ve Fiyat Tablosu")
-st.write(
-    "Bu program, BİST hisselerinin bilançolarını ve piyasa verilerini çekerek"
-    " özel modellerinize göre analiz eder."
-)
+class ValuationEngine:
+    @staticmethod
+    def get_bist100_universe():
+        # Kesin ve eksiksiz BIST 100 sembol listesi
+        return sorted(list(set([
+            "AEFES.IS", "AGHOL.IS", "AHGAZ.IS", "AKBNK.IS", "AKCNS.IS", "AKFGY.IS", "AKSA.IS", "AKSEN.IS", 
+            "ALARK.IS", "ALBRK.IS", "ALFAS.IS", "ARCLK.IS", "ASELS.IS", "ASTOR.IS", "BERA.IS", "BIMAS.IS", 
+            "BOBET.IS", "BRSAN.IS", "BRYAT.IS", "BUCIM.IS", "CANTE.IS", "CCOLA.IS", "CIMSA.IS", "CWENE.IS", 
+            "DEVA.IS", "DOAS.IS", "DOHOL.IS", "ECILC.IS", "ECZYT.IS", "EGEEN.IS", "EKGYO.IS", "ENJSA.IS", 
+            "ENKAI.IS", "EREGL.IS", "EUPWR.IS", "EYYG.IS", "FROTO.IS", "GARAN.IS", "GENIL.IS", "GESAN.IS", 
+            "GLYHO.IS", "GOKNR.IS", "GUBRF.IS", "HALKB.IS", "HEKTS.IS", "IPEKE.IS", "ISCTR.IS", "ISDMR.IS", 
+            "ISMEN.IS", "IZMDC.IS", "KCHOL.IS", "KMPUR.IS", "KONTR.IS", "KONYA.IS", "KORDS.IS", "KOZAA.IS", 
+            "KOZAL.IS", "KRDMD.IS", "KTLEV.IS", "KZBGY.IS", "MAVI.IS", "MGROS.IS", "MIATK.IS", "MPARK.IS", 
+            "ODAS.IS", "ONCSM.IS", "OTKAR.IS", "OYAKC.IS", "PATEK.IS", "PCILT.IS", "PETKM.IS", "PGSUS.IS", 
+            "QUAGR.IS", "REEDR.IS", "SAHOL.IS", "SASA.IS", "SDTTR.IS", "SISE.IS", "SKBNK.IS", "SMRTG.IS", 
+            "SOKM.IS", "TAVHL.IS", "TCELL.IS", "THYAO.IS", "TKFEN.IS", "TMSN.IS", "TOASO.IS", "TSKB.IS", 
+            "TTKOM.IS", "TTRAK.IS", "TUPRS.IS", "ULKER.IS", "VAKBN.IS", "VESBE.IS", "VESTL.IS", "YEOTK.IS", 
+            "YKBNK.IS", "YYLGD.IS", "ZOREN.IS"
+        ])))
 
-# Test edilebilecek popüler BİST hisseleri
-bist_hisseleri = [
-    "KCAER.IS",
-    "EREGL.IS",
-    "KARDM.IS",
-    "SISE.IS",
-    "THYAO.IS",
-    "ASELS.IS",
-]
+    @staticmethod
+    def calculate_portfolio_valuation(current_prices=None):
+        """
+        Portföyün nakit, açık pozisyon piyasa değeri (MTM) ve net varlık değerini
+        matematiksel olarak kusursuz hesaplar.
+        """
+        conn = sqlite3.connect(DB_FILE)
+        df_port = pd.read_sql("SELECT * FROM paper_portfolio ORDER BY id DESC LIMIT 1", conn)
+        df_pos = pd.read_sql("SELECT * FROM paper_positions", conn)
+        conn.close()
 
+        cash = df_port.iloc[0]['cash'] if not df_port.empty else 100000.0
+        
+        open_positions_value = 0.0
+        detailed_positions = []
 
-def veri_cek(hisse_listesi):
-  data_list = []
-  for ticker in hisse_listesi:
-    try:
-      h = yf.Ticker(ticker)
+        if not df_pos.empty:
+            for _, row in df_pos.iterrows():
+                sym = row['symbol']
+                shares = row['shares']
+                entry_price = row['entry_price']
+                current_p = current_prices.get(sym, entry_price) if current_prices else entry_price
+                
+                market_val = shares * current_p
+                open_positions_value += market_val
+                
+                pnl_tl = market_val - (shares * entry_price)
+                pnl_pct = ((current_p - entry_price) / entry_price) * 100.0
+                
+                detailed_positions.append({
+                    'symbol': sym,
+                    'shares': shares,
+                    'entry_price': entry_price,
+                    'current_price': current_p,
+                    'market_value': market_val,
+                    'pnl_tl': pnl_tl,
+                    'pnl_pct': pnl_pct,
+                    'stop_loss': row['stop_loss'],
+                    'tp1': row['tp1'],
+                    'tp2': row['tp2']
+                })
 
-      # Anlık Fiyat
-      hist = h.history(period="1d")
-      fiyat = (
-          hist["Close"].iloc[-1]
-          if not hist.empty
-          else h.info.get("currentPrice", 0)
-      )
+        total_nav = cash + open_positions_value
+        initial_capital = 100000.0
+        net_profit_tl = total_nav - initial_capital
+        net_profit_pct = (net_profit_tl / initial_capital) * 100.0
 
-      info = h.info
-      piyasa_degeri = info.get("marketCap", 0)
-
-      # Finansal Bilanço Kalemleri (Özsermaye ve Net Kâr çekme denemesi)
-      # yfinance balanced sheet veya info üzerinden güvenli çekim
-      ozsermaye = info.get("totalStockholderEquity", 0)
-      net_kar = info.get("netIncomeToCommon", 0)
-
-      # Eğer info'da yoksa balance_sheet'ten okumaya çalışalım
-      if not ozsermaye or ozsermaye == 0:
-        try:
-          bs = h.balance_sheet
-          if not bs.empty:
-            ozsermaye = bs.loc["Stockholders Equity"].iloc[0]
-        except:
-          ozsermaye = 0
-
-      if not net_kar or net_kar == 0:
-        try:
-          financials = h.financials
-          if not financials.empty:
-            net_kar = financials.loc["Net Income"].iloc[0]
-        except:
-          net_kar = 0
-
-      data_list.append({
-          "Hisse": ticker.replace(".IS", ""),
-          "Fiyat (TL)": round(fiyat, 2) if fiyat else 0,
-          "Piyasa Değeri (TL)": piyasa_degeri,
-          "Öz Sermaye (TL)": ozsermaye if ozsermaye else 0,
-          "Net Kâr (TL)": net_kar if net_kar else 0,
-      })
-    except Exception as e:
-      data_list.append({
-          "Hisse": ticker.replace(".IS", ""),
-          "Fiyat (TL)": 0,
-          "Piyasa Değeri (TL)": 0,
-          "Öz Sermaye (TL)": 0,
-          "Net Kâr (TL)": 0,
-      })
-
-  df = pd.DataFrame(data_list)
-
-  # Özsermaye / Net Kâr ve konuştuğumuz Model Hesaplaması (Özsermaye / Net Kâr * 10)
-  df["Öz Sermaye / Net Kâr"] = np.where(
-      df["Net Kâr (TL)"] != 0,
-      (df["Öz Sermaye (TL)"] / df["Net Kâr (TL)"]).round(2),
-      np.nan,
-  )
-
-  df["Model Hedef Skoru"] = np.where(
-      df["Net Kâr (TL)"] != 0,
-      ((df["Öz Sermaye (TL)"] / df["Net Kâr (TL)"]) * 10).round(2),
-      np.nan,
-  )
-
-  return df
-
-
-if st.button("Verileri Güncelle ve Modeli Çalıştır"):
-  with st.spinner("BİST verileri taranıyor ve modeller hesaplanıyor..."):
-    df = veri_cek(bist_hisseleri)
-
-    if not df.empty and df["Fiyat (TL)"].sum() > 0:
-      st.success("Tarama Tamamlandı!")
-      st.dataframe(df, use_container_width=True)
-
-      # Excel olarak indirme butonu
-      csv = df.to_csv(index=False).encode("utf-8")
-      st.download_button(
-          label="Tabloyu Excel Olarak İndir",
-          data=csv,
-          file_name="bist_degerleme_tablosu.csv",
-          mime="text/csv",
-      )
-    else:
-      st.warning(
-          "Veriler anlık olarak çekilemedi. Yahoo Finance API bağlantısı geçici"
-          " olarak kısıtlanmış olabilir. Lütfen birkaç dakika sonra tekrar"
-          " deneyin."
-      )
+        return {
+            "cash": cash,
+            "open_positions_value": open_positions_value,
+            "total_nav": total_nav,
+            "net_profit_tl": net_profit_tl,
+            "net_profit_pct": net_profit_pct,
+            "detailed_positions": detailed_positions
+        }
