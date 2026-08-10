@@ -6,10 +6,11 @@ import sqlite3
 from datetime import datetime, timedelta
 import warnings
 
-from valuation_engine import ValuationEngine
-
 warnings.filterwarnings('ignore')
 
+# ==========================================
+# STREAMLIT SAYFA YAPilandirmasi VE CSS
+# ==========================================
 st.set_page_config(
     page_title="QUANT MASTER v64 — ULTIMATE PAPER TRADER",
     page_icon="⚡",
@@ -43,6 +44,83 @@ st.markdown("""
 
 DB_FILE = "quant_master_v64.db"
 
+# ==========================================
+# VALUATION ENGINE (DEĞERLEME MOTORU)
+# ==========================================
+class ValuationEngine:
+    @staticmethod
+    def get_bist100_universe():
+        return sorted(list(set([
+            "AEFES.IS", "AGHOL.IS", "AHGAZ.IS", "AKBNK.IS", "AKCNS.IS", "AKFGY.IS", "AKSA.IS", "AKSEN.IS", 
+            "ALARK.IS", "ALBRK.IS", "ALFAS.IS", "ARCLK.IS", "ASELS.IS", "ASTOR.IS", "BERA.IS", "BIMAS.IS", 
+            "BOBET.IS", "BRSAN.IS", "BRYAT.IS", "BUCIM.IS", "CANTE.IS", "CCOLA.IS", "CIMSA.IS", "CWENE.IS", 
+            "DEVA.IS", "DOAS.IS", "DOHOL.IS", "ECILC.IS", "ECZYT.IS", "EGEEN.IS", "EKGYO.IS", "ENJSA.IS", 
+            "ENKAI.IS", "EREGL.IS", "EUPWR.IS", "EYYG.IS", "FROTO.IS", "GARAN.IS", "GENIL.IS", "GESAN.IS", 
+            "GLYHO.IS", "GOKNR.IS", "GUBRF.IS", "HALKB.IS", "HEKTS.IS", "IPEKE.IS", "ISCTR.IS", "ISDMR.IS", 
+            "ISMEN.IS", "IZMDC.IS", "KCHOL.IS", "KMPUR.IS", "KONTR.IS", "KONYA.IS", "KORDS.IS", "KOZAA.IS", 
+            "KOZAL.IS", "KRDMD.IS", "KTLEV.IS", "KZBGY.IS", "MAVI.IS", "MGROS.IS", "MIATK.IS", "MPARK.IS", 
+            "ODAS.IS", "ONCSM.IS", "OTKAR.IS", "OYAKC.IS", "PATEK.IS", "PCILT.IS", "PETKM.IS", "PGSUS.IS", 
+            "QUAGR.IS", "REEDR.IS", "SAHOL.IS", "SASA.IS", "SDTTR.IS", "SISE.IS", "SKBNK.IS", "SMRTG.IS", 
+            "SOKM.IS", "TAVHL.IS", "TCELL.IS", "THYAO.IS", "TKFEN.IS", "TMSN.IS", "TOASO.IS", "TSKB.IS", 
+            "TTKOM.IS", "TTRAK.IS", "TUPRS.IS", "ULKER.IS", "VAKBN.IS", "VESBE.IS", "VESTL.IS", "YEOTK.IS", 
+            "YKBNK.IS", "YYLGD.IS", "ZOREN.IS"
+        ])))
+
+    @staticmethod
+    def calculate_portfolio_valuation(current_prices=None):
+        conn = sqlite3.connect(DB_FILE)
+        df_port = pd.read_sql("SELECT * FROM paper_portfolio ORDER BY id DESC LIMIT 1", conn)
+        df_pos = pd.read_sql("SELECT * FROM paper_positions", conn)
+        conn.close()
+
+        cash = df_port.iloc[0]['cash'] if not df_port.empty else 100000.0
+        open_positions_value = 0.0
+        detailed_positions = []
+
+        if not df_pos.empty:
+            for _, row in df_pos.iterrows():
+                sym = row['symbol']
+                shares = row['shares']
+                entry_price = row['entry_price']
+                current_p = current_prices.get(sym, entry_price) if current_prices else entry_price
+                
+                market_val = shares * current_p
+                open_positions_value += market_val
+                
+                pnl_tl = market_val - (shares * entry_price)
+                pnl_pct = ((current_p - entry_price) / entry_price) * 100.0
+                
+                detailed_positions.append({
+                    'symbol': sym,
+                    'shares': shares,
+                    'entry_price': entry_price,
+                    'current_price': current_p,
+                    'market_value': market_val,
+                    'pnl_tl': pnl_tl,
+                    'pnl_pct': pnl_pct,
+                    'stop_loss': row['stop_loss'],
+                    'tp1': row['tp1'],
+                    'tp2': row['tp2'],
+                    'quant_score': row['quant_score']
+                })
+
+        total_nav = cash + open_positions_value
+        initial_capital = 100000.0
+        net_profit_tl = total_nav - initial_capital
+        net_profit_pct = (net_profit_tl / initial_capital) * 100.0
+
+        return {
+            "cash": cash,
+            "open_positions_value": open_positions_value,
+            "total_nav": total_nav,
+            "net_profit_tl": net_profit_tl,
+            "net_profit_pct": net_profit_pct,
+            "detailed_positions": detailed_positions
+        }
+
+# ==========================================
+# DATABASE ENGINE (VERİTABANI YÖNETİMİ)
+# ==========================================
 class DatabaseEngineV64:
     @staticmethod
     def init_db():
@@ -139,6 +217,9 @@ class DatabaseEngineV64:
         conn.close()
         DatabaseEngineV64.init_db()
 
+# ==========================================
+# MARKET REGIME ENGINE (PİYASA REJİMİ ANALİZİ)
+# ==========================================
 class MarketRegimeEngineV64:
     @staticmethod
     def analyze_market(data_dict, df_xu100):
@@ -185,6 +266,9 @@ class MarketRegimeEngineV64:
             
         return regime, breadth_pct, score_regime, adaptive_threshold
 
+# ==========================================
+# TECHNICAL ENGINE (TEKNİK FAKTÖRLER & SKORLAMA)
+# ==========================================
 class TechnicalEngineV64:
     @staticmethod
     def calculate_factors(df, df_xu100=None, regime_score=8.0):
@@ -265,6 +349,9 @@ class TechnicalEngineV64:
         df['Quant_Score'] = np.clip(raw_total, 0.0, 100.0)
         return df
 
+# ==========================================
+# DECISION & PAPER ENGINE (ALIM/SATIM MOTORU)
+# ==========================================
 class DecisionAndPaperEngineV64:
     @staticmethod
     def run_execution(data_dict, regime, breadth_pct, regime_score, adaptive_threshold=75.0):
@@ -386,6 +473,9 @@ class DecisionAndPaperEngineV64:
         
         return active_candidates, current_prices
 
+# ==========================================
+# MAIN ARAYÜZ (STREAMLIT UI)
+# ==========================================
 def main():
     DatabaseEngineV64.init_db()
     
@@ -501,7 +591,7 @@ def main():
                 
                 col_a, col_b, col_c = st.columns([3, 2, 1])
                 col_a.markdown(f"**{pos['symbol']}** | Adet: {pos['shares']} | Giriş: {pos['entry_price']:.2f} ₺ | Güncel: {pos['current_price']:.2f} ₺")
-                col_b.markdown(f"PnL: <span style='color:{color_code};'><b>{pnl_val:+,.2f} ₺ ({pnl_pct:+.2f}%)</b></span>", unsafe_allow_html=True)
+                col_b.markdown(f"PnL: <span style='color:{color_code};'><b>{pnl_val:+,.2f} ₺ ({pnl_pct:+.2%})</b></span>", unsafe_allow_html=True)
                 
                 if col_c.button(f"Pozisyonu Kapat", key=f"close_{pos['symbol']}"):
                     DatabaseEngineV64.close_position_manually(pos['symbol'], pos['current_price'])
@@ -531,3 +621,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
