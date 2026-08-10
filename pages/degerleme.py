@@ -1,15 +1,12 @@
 import pandas as pd
 import numpy as np
 import sqlite3
-from datetime import datetime
-import yfinance as yf
 
 DB_FILE = "quant_master_v64.db"
 
 class ValuationEngine:
     @staticmethod
     def get_bist100_universe():
-        # Kesin ve eksiksiz BIST 100 sembol listesi
         return sorted(list(set([
             "AEFES.IS", "AGHOL.IS", "AHGAZ.IS", "AKBNK.IS", "AKCNS.IS", "AKFGY.IS", "AKSA.IS", "AKSEN.IS", 
             "ALARK.IS", "ALBRK.IS", "ALFAS.IS", "ARCLK.IS", "ASELS.IS", "ASTOR.IS", "BERA.IS", "BIMAS.IS", 
@@ -28,17 +25,12 @@ class ValuationEngine:
 
     @staticmethod
     def calculate_portfolio_valuation(current_prices=None):
-        """
-        Portföyün nakit, açık pozisyon piyasa değeri (MTM) ve net varlık değerini
-        matematiksel olarak kusursuz hesaplar.
-        """
         conn = sqlite3.connect(DB_FILE)
         df_port = pd.read_sql("SELECT * FROM paper_portfolio ORDER BY id DESC LIMIT 1", conn)
         df_pos = pd.read_sql("SELECT * FROM paper_positions", conn)
         conn.close()
 
         cash = df_port.iloc[0]['cash'] if not df_port.empty else 100000.0
-        
         open_positions_value = 0.0
         detailed_positions = []
 
@@ -65,7 +57,8 @@ class ValuationEngine:
                     'pnl_pct': pnl_pct,
                     'stop_loss': row['stop_loss'],
                     'tp1': row['tp1'],
-                    'tp2': row['tp2']
+                    'tp2': row['tp2'],
+                    'quant_score': row['quant_score']
                 })
 
         total_nav = cash + open_positions_value
