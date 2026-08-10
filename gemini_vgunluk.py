@@ -356,7 +356,6 @@ class SimulationEngineV63:
                     if score >= adaptive_threshold:
                         day_candidates.append({'symbol': sym, 'score': score, 'price': price})
             
-            # Pozisyon çıkış kontrolü: %2 Kar veya Stop-Loss (-%5)
             for sym, pos in list(sim_positions.items()):
                 if sym in daily_prices:
                     cur_p = daily_prices[sym]
@@ -371,18 +370,17 @@ class SimulationEngineV63:
             
             day_candidates.sort(key=lambda x: x['score'], reverse=True)
             
-            # Sadece tek bir hisse veya 30.000 TL bütçe ile işlem açma (Portföyün tamamı / 30k TL kuralı)
             for cand in day_candidates[:1]:
                 sym = cand['symbol']
-                if sym not in sim_positions and not sim_positions: # Aynı anda tek pozisyon kuralı (30k TL tam bütçe)
+                if sym not in sim_positions and not sim_positions:
                     price = cand['price']
                     target_allocation = 30000.0
                     shares = int(target_allocation / (price + 1e-10))
                     
                     if shares > 0 and sim_cash >= (shares * price):
                         sim_cash -= (shares * price)
-                        tp1 = price * 1.02      # Sabit %2 Kar Hedefi
-                        stop_loss = price * 0.95 # Güvenli Stop-Loss
+                        tp1 = price * 1.02      
+                        stop_loss = price * 0.95 
                         
                         sim_positions[sym] = {'entry_price': price, 'shares': shares, 'stop_loss': stop_loss, 'tp1': tp1, 'score': cand['score']}
                         sim_log.append({
@@ -440,7 +438,6 @@ class DecisionAndPaperEngineV63:
             exit_reason = ""
             exit_price = c_row['Close']
             
-            # Sabit %2 Kar Hedefi veya Stop-Loss Kontrolü
             if c_row['High'] >= pos['tp1']:
                 exit_flag = True
                 exit_reason = "Take Profit (%2 Kar) Hit"
@@ -473,7 +470,8 @@ class DecisionAndPaperEngineV63:
                 cursor.execute("DELETE FROM paper_positions WHERE symbol = ?", (sym,))
                 del open_positions[sym]
             else:
-                cursor.execute("UPDATE paper_positions WHERE bars_held = bars_held + 1 WHERE symbol = ?", (sym,))
+                # DÜZELTİLDİ: Çift WHERE hatası giderildi (SET eklendi)
+                cursor.execute("UPDATE paper_positions SET bars_held = bars_held + 1 WHERE symbol = ?", (sym,))
 
         active_candidates = []
         for sym, df in data_dict.items():
@@ -487,8 +485,8 @@ class DecisionAndPaperEngineV63:
             
             if score >= adaptive_threshold:
                 entry_p = c_row['Close'] * 1.001
-                tp_p = entry_p * 1.02      # %2 Sabit Hedef
-                sl_p = entry_p * 0.95      # Sabit Stop
+                tp_p = entry_p * 1.02      
+                sl_p = entry_p * 0.95      
                 
                 grade = "A+" if score >= 90 else ("A" if score >= 85 else "B")
                 decision = "🟢 GÜÇLÜ AL"
@@ -501,7 +499,6 @@ class DecisionAndPaperEngineV63:
                 
         active_candidates.sort(key=lambda x: x['score'], reverse=True)
         
-        # Eğer açık pozisyon yoksa ve en az 30.000 TL nakit varsa, en iyi adaya 30.000 TL'lik işlem aç
         if len(open_positions) == 0 and active_candidates:
             cand = active_candidates[0]
             entry_price = cand['price'] * 1.001
