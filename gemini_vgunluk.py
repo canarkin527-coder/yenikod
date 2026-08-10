@@ -495,9 +495,13 @@ def main():
         st.subheader("💼 Aktif Pozisyonlar ve Yönetim")
         if valuation['detailed_positions']:
             for pos in valuation['detailed_positions']:
+                pnl_val = pos['pnl_tl']
+                pnl_pct = pos['pnl_pct']
+                color_code = "#10B981" if pnl_val >= 0 else "#EF4444"
+                
                 col_a, col_b, col_c = st.columns([3, 2, 1])
                 col_a.markdown(f"**{pos['symbol']}** | Adet: {pos['shares']} | Giriş: {pos['entry_price']:.2f} ₺ | Güncel: {pos['current_price']:.2f} ₺")
-                col_b.markdown(f"PnL: <span style='color:{\"#10B981\" if pos['pnl_tl']>=0 else \"#EF4444\"};'><b>{pos['pnl_tl']:+,.2f} ₺ ({pos['pnl_pct']:+.2f}%)</b></span>", unsafe_allow_html=True)
+                col_b.markdown(f"PnL: <span style='color:{color_code};'><b>{pnl_val:+,.2f} ₺ ({pnl_pct:+.2f}%)</b></span>", unsafe_allow_html=True)
                 
                 if col_c.button(f"Pozisyonu Kapat", key=f"close_{pos['symbol']}"):
                     DatabaseEngineV64.close_position_manually(pos['symbol'], pos['current_price'])
