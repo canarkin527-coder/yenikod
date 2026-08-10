@@ -4,12 +4,14 @@ import pandas as pd
 import numpy as np
 import sqlite3
 from datetime import datetime, timedelta
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import warnings
 
 warnings.filterwarnings('ignore')
 
 # ==============================================================================
-# 1. STREAMLIT CONFIGURATION & INSTITUTIONAL THEME (UI KESİNLİKLE KORUNDU)
+# 1. STREAMLIT CONFIGURATION & INSTITUTIONAL THEME
 # ==============================================================================
 st.set_page_config(
     page_title="QUANT MASTER v63 — ULTIMATE PAPER TRADER",
@@ -115,7 +117,7 @@ class DatabaseEngineV63:
         df_trades = pd.read_sql("SELECT * FROM paper_trades ORDER BY id DESC", conn)
         conn.close()
         
-        port_dict = df_port.iloc[0].to_dict() if not df_port.empty else {'cash': 100000.0, 'total_value': 100000.0}
+        port_dict = df_port.iloc[0].to_dict()
         
         if current_prices and not df_pos.empty:
             pos_market_value = 0.0
@@ -159,13 +161,13 @@ def get_bist100_constituents():
     ])))
 
 # ==============================================================================
-# 4. MARKET REGIME & BREADTH ENGINE (GELİŞTİRİLMİŞ 5’Lİ REJİM & ADAPTİF EŞİK)
+# 4. MARKET REGIME & BREADTH ENGINE
 # ==============================================================================
 class MarketRegimeEngineV63:
     @staticmethod
     def analyze_market(data_dict, df_xu100):
         if df_xu100 is None or df_xu100.empty:
-            return "NEUTRAL", 50.0, 8.0, 75.0
+            return "NEUTRAL", 50.0, 8.0
             
         close = df_xu100['Close']
         ema20 = close.ewm(span=20, adjust=False).mean()
@@ -176,7 +178,7 @@ class MarketRegimeEngineV63:
         total_valid = 0
         
         for sym, df in data_dict.items():
-            if len(df) > 20 and 'Close' in df.columns:
+            if len(df) > 20:
                 if df['Close'].iloc[-1] > df['Close'].ewm(span=20, adjust=False).mean().iloc[-1]:
                     above_ema20_cnt += 1
                 total_valid += 1
@@ -185,54 +187,35 @@ class MarketRegimeEngineV63:
         c_last = close.iloc[-1]
         
         if c_last > ema20.iloc[-1] and ema20.iloc[-1] > ema50.iloc[-1] and breadth_pct >= 60.0:
-            regime = "GUCLU_BOGA"
+            regime = "STRONG BULL"
             score_regime = 15.0
-            adaptive_threshold = 70.0  # Simülasyonda esneklik için optimize edildi
         elif c_last > ema50.iloc[-1] and breadth_pct >= 45.0:
-            regime = "ZAYIF_BOGA"
+            regime = "BULL"
             score_regime = 12.0
-            adaptive_threshold = 75.0
-        elif (ema50.iloc[-1] * 0.98 <= c_last <= ema50.iloc[-1] * 1.02) or (35.0 <= breadth_pct < 45.0):
-            regime = "TESTERE"
-            score_regime = 8.0
-            adaptive_threshold = 78.0
         elif c_last < ema50.iloc[-1] and breadth_pct < 35.0:
-            regime = "ZAYIF_AYI"
+            regime = "BEAR"
             score_regime = 4.0
-            adaptive_threshold = 82.0
         elif c_last < ema200.iloc[-1] and breadth_pct < 25.0:
-            regime = "GUCLU_AYI"
+            regime = "STRONG BEAR"
             score_regime = 0.0
-            adaptive_threshold = 85.0
         else:
-            regime = "TESTERE"
+            regime = "NEUTRAL"
             score_regime = 8.0
-            adaptive_threshold = 75.0
             
-        return regime, breadth_pct, score_regime, adaptive_threshold
+        return regime, breadth_pct, score_regime
 
 # ==============================================================================
-# 5. TECHNICAL & 100-POINT NORMALIZED SCORING ENGINE
+# 5. TECHNICAL & 100-POINT SCORING ENGINE (3 YILLIK VERİ UYUMLU)
 # ==============================================================================
 class TechnicalEngineV63:
     @staticmethod
     def calculate_factors(df, df_xu100=None, regime_score=8.0):
-        if df is None or len(df) < 60:
-            return None
-            
         df = df.copy()
-        df.dropna(subset=['Close', 'High', 'Low', 'Volume'], inplace=True)
-        if len(df) < 60:
-            return None
-
+        
         close = df['Close']
         high = df['High']
         low = df['Low']
         volume = df['Volume']
-        
-        avg_vol_50 = volume.rolling(50).mean()
-        avg_turnover_50 = (volume * close).rolling(50).mean()
-        df['Is_Liquid'] = (avg_vol_50 >= 30000) & (avg_turnover_50 >= 1000000) # Simülasyon esnekliği için optimize edildi
         
         df['EMA_10'] = close.ewm(span=10, adjust=False).mean()
         df['EMA_20'] = close.ewm(span=20, adjust=False).mean()
@@ -255,89 +238,67 @@ class TechnicalEngineV63:
         c4 = df['EMA_200'] > df['EMA_200'].shift(20)
         c5 = df['EMA_50'] > df['EMA_150']
         c6 = close > df['EMA_50']
-        c7 = close >= (low_52w * 1.15)
-        c8 = close >= (high_52w * 0.65)
+        c7 = close >= (low_52w * 1.25)
+        c8 = close >= (high_52w * 0.75)
         
         min_score = (c1.astype(int) + c2.astype(int) + c3.astype(int) + c4.astype(int) +
                      c5.astype(int) + c6.astype(int) + c7.astype(int) + c8.astype(int))
-        df['Score_Trend'] = (min_score / 8.0) * 10.0
-        
-        df['HTF_Trend'] = np.where(close > df['EMA_50'], 'BULLISH', np.where(close < df['EMA_50'], 'BEARISH', 'NEUTRAL'))
-        htf_score_bonus = np.where(df['HTF_Trend'] == 'BULLISH', 15.0, np.where(df['HTF_Trend'] == 'BEARISH', -5.0, 8.0))
-        df['Score_HTF'] = np.clip(htf_score_bonus, 0.0, 15.0)
+        df['Score_Trend'] = (min_score / 8.0) * 15.0
         
         delta = close.diff()
         gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False).mean()
         loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
         df['RSI'] = 100 - (100 / (1 + gain / (loss + 1e-10)))
         
-        plus_dm = high.diff()
-        minus_dm = low.diff().abs() * -1
-        plus_dm = np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0.0)
-        minus_dm = np.where((minus_dm > plus_dm) & (minus_dm > 0), minus_dm, 0.0)
-        tr_smooth = df['ATR']
-        plus_di = 100 * pd.Series(plus_dm, index=df.index).ewm(alpha=1/14).mean() / (tr_smooth + 1e-10)
-        minus_di = 100 * pd.Series(minus_dm, index=df.index).ewm(alpha=1/14).mean() / (tr_smooth + 1e-10)
-        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-10)
-        df['ADX'] = dx.ewm(alpha=1/14).mean()
-
         macd_line = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
         signal_line = macd_line.ewm(span=9, adjust=False).mean()
         df['MACD_Hist'] = macd_line - signal_line
         
-        mom_pts = np.where((df['RSI'] >= 45) & (df['RSI'] <= 75), 10.0, 5.0)
-        mom_pts += np.where(df['MACD_Hist'] > -0.1, 5.0, 0.0)
-        df['Score_Mom'] = np.clip(mom_pts, 0.0, 15.0)
-
+        rsi_pts = np.where((df['RSI'] >= 50) & (df['RSI'] <= 68), 7.5, np.where(df['RSI'] > 68, 4.0, 2.0))
+        macd_pts = np.where(df['MACD_Hist'] > 0, 7.5, 0.0)
+        df['Score_Mom'] = rsi_pts + macd_pts
+        
         if df_xu100 is not None and not df_xu100.empty:
             xu_c = df_xu100['Close'].reindex(df.index).ffill()
-            rs5 = close.pct_change(5) - xu_c.pct_change(5)
             rs20 = close.pct_change(20) - xu_c.pct_change(20)
             rs60 = close.pct_change(60) - xu_c.pct_change(60)
-            df['Composite_RS'] = (0.2 * rs5) + (0.3 * rs20) + (0.5 * rs60)
+            df['Composite_RS'] = (0.6 * rs20) + (0.4 * rs60)
         else:
             df['Composite_RS'] = 0.0
-        df['Score_RS'] = np.clip((df['Composite_RS'] + 0.05) * 150.0, 0.0, 15.0)
-
+        df['Score_RS'] = np.clip((df['Composite_RS'] + 0.05) * 100.0, 0.0, 15.0)
+        
         df['Vol_SMA50'] = volume.shift(1).rolling(50).mean()
         df['RVOL'] = volume / (df['Vol_SMA50'] + 1e-10)
-        df['Score_Vol'] = np.clip((df['RVOL'] - 0.7) * 10.0, 0.0, 10.0)
-
+        df['Score_Vol'] = np.clip((df['RVOL'] - 0.8) * 6.0, 0.0, 10.0)
+        
         fvg_gap = np.maximum(0, low - high.shift(2))
         bullish_bos = close > high.shift(1).rolling(10).max()
-        smc_raw = np.clip((fvg_gap / (df['ATR'] + 1e-10)) * 5.0, 0.0, 5.0) + np.where(bullish_bos, 5.0, 3.0)
-        df['Score_SMC'] = np.clip(smc_raw, 0.0, 10.0)
-
-        ret_std = close.pct_change().rolling(20).std()
-        df['Score_Volatility'] = np.clip(10.0 - (ret_std * 80.0), 2.0, 10.0)
-        df['Score_Regime'] = regime_score
-
-        raw_total = (
-            df['Score_Regime'] +
-            df['Score_HTF'] +
-            df['Score_RS'] +
-            df['Score_Mom'] +
-            df['Score_Trend'] +
-            df['Score_Vol'] +
-            df['Score_SMC'] +
-            df['Score_Volatility']
+        df['Score_SMC'] = np.clip((fvg_gap / (df['ATR'] + 1e-10)) * 5.0, 0.0, 7.5) + np.where(bullish_bos, 7.5, 0.0)
+        
+        std10 = close.rolling(10).std()
+        std30 = close.rolling(30).std()
+        vcp = (std10 < std30 * 0.65) & (close > df['EMA_20'])
+        df['Score_VCP'] = np.where(vcp, 10.0, 4.0)
+        
+        df['Quant_Score'] = np.clip(
+            regime_score + df['Score_Trend'] + df['Score_Mom'] + df['Score_RS'] +
+            df['Score_Vol'] + df['Score_SMC'] + df['Score_VCP'], 0.0, 100.0
         )
-        df['Quant_Score'] = np.clip(raw_total, 0.0, 100.0)
         return df
 
 # ==============================================================================
-# 6. SIMULATION & BACKTEST ENGINE (DÜZELTİLMİŞ VE TETİKLEYİCİ)
+# 5. BACKTEST & SIMULATION ENGINE (GÜNCELLENMİŞ VE HATASIZ TEST ALANI)
 # ==============================================================================
 class SimulationEngineV63:
     @staticmethod
-    def run_backtest_simulation(data_dict, test_days=30, adaptive_threshold=75.0):
+    def run_backtest_simulation(data_dict, test_days=30):
         sim_log = []
         sim_cash = 100000.0
         sim_portfolio_value = 100000.0
         sim_positions = {}
         
         if not data_dict:
-            return pd.DataFrame(), sim_cash, {}
+            return pd.DataFrame(), sim_cash
 
         sample_sym = list(data_dict.keys())[0]
         all_dates = data_dict[sample_sym].index[-test_days:]
@@ -352,11 +313,10 @@ class SimulationEngineV63:
                     row = df.loc[day_idx]
                     price = float(row['Close'])
                     daily_prices[sym] = price
-                    score = float(row.get('Quant_Score', 60.0))
+                    score = float(row.get('Quant_Score', 50.0))
                     atr = float(row.get('ATR', price * 0.02))
                     
-                    # Simülasyon eşik kontrolü (esnek taban)
-                    if score >= adaptive_threshold:
+                    if score >= 65.0:
                         day_candidates.append({'symbol': sym, 'score': score, 'price': price, 'atr': atr})
             
             for sym, pos in list(sim_positions.items()):
@@ -367,68 +327,39 @@ class SimulationEngineV63:
                         pnl_pct = (cur_p - pos['entry_price']) / pos['entry_price']
                         sim_cash += (pos['shares'] * cur_p)
                         sim_log.append({
-                            "Tarih": day_str, "Hisse": sym, "İşlem": "SAT", "Fiyat": cur_p, "PnL ₺": pnl, "PnL %": pnl_pct, "Score": pos['score']
+                            "Tarih": day_str, "Hisse": sym, "İşlem": "SAT", "Fiyat": cur_p, "PnL ₺": pnl, "PnL %": pnl_pct
                         })
                         del sim_positions[sym]
             
             day_candidates.sort(key=lambda x: x['score'], reverse=True)
-            active_count = len(sim_positions)
-            
             for cand in day_candidates[:3]:
                 sym = cand['symbol']
-                if sym not in sim_positions and active_count < 5:
+                if sym not in sim_positions and len(sim_positions) < 5:
                     price = cand['price']
                     stop_loss = price - (1.5 * cand['atr'])
                     tp1 = price + (2.0 * cand['atr'])
+                    shares = int((sim_portfolio_value * 0.15) / (price + 1e-10))
                     
-                    risk = price - stop_loss
-                    reward = tp1 - price
-                    rr = reward / (risk + 1e-10)
-                    
-                    if rr >= 1.2: # Esnek R:R
-                        shares = int((sim_portfolio_value * 0.15) / (price + 1e-10))
-                        if shares > 0 and sim_cash >= (shares * price):
-                            sim_cash -= (shares * price)
-                            sim_positions[sym] = {'entry_price': price, 'shares': shares, 'stop_loss': stop_loss, 'tp1': tp1, 'score': cand['score']}
-                            sim_log.append({
-                                "Tarih": day_str, "Hisse": sym, "İşlem": "AL", "Fiyat": price, "PnL ₺": 0.0, "PnL %": 0.0, "Score": cand['score']
-                            })
-                            active_count += 1
-                            
-        df_log = pd.DataFrame(sim_log)
-        
-        metrics = {}
-        if not df_log.empty and "PnL ₺" in df_log.columns:
-            closed_trades = df_log[df_log["İşlem"] == "SAT"]
-            if not closed_trades.empty:
-                wins = closed_trades[closed_trades['PnL ₺'] > 0]
-                losses = closed_trades[closed_trades['PnL ₺'] <= 0]
-                
-                metrics['Total Trades'] = len(closed_trades)
-                metrics['Win Rate'] = (len(wins) / len(closed_trades)) * 100.0
-                metrics['Gross Profit'] = wins['PnL ₺'].sum()
-                metrics['Gross Loss'] = abs(losses['PnL ₺'].sum())
-                metrics['Net PnL'] = closed_trades['PnL ₺'].sum()
-                metrics['Profit Factor'] = (metrics['Gross Profit'] / metrics['Gross Loss']) if metrics['Gross Loss'] > 0 else np.inf
-            else:
-                metrics = {'Total Trades': 0, 'Win Rate': 0.0, 'Net PnL': 0.0, 'Profit Factor': 0.0}
-        else:
-            metrics = {'Total Trades': 0, 'Win Rate': 0.0, 'Net PnL': 0.0, 'Profit Factor': 0.0}
-            
-        return df_log, sim_cash, metrics
+                    if shares > 0 and sim_cash >= (shares * price):
+                        sim_cash -= (shares * price)
+                        sim_positions[sym] = {'entry_price': price, 'shares': shares, 'stop_loss': stop_loss, 'tp1': tp1}
+                        sim_log.append({
+                            "Tarih": day_str, "Hisse": sym, "İşlem": "AL", "Fiyat": price, "PnL ₺": 0.0, "PnL %": 0.0
+                        })
+                        
+        return pd.DataFrame(sim_log), sim_cash
 
 # ==============================================================================
-# 7. DECISION ENGINE & PAPER TRADING EXECUTION
+# 6. DECISION ENGINE & PAPER TRADING EXECUTION
 # ==============================================================================
 class DecisionAndPaperEngineV63:
     @staticmethod
-    def run_execution(data_dict, regime, breadth_pct, regime_score, adaptive_threshold=75.0):
+    def run_execution(data_dict, regime, breadth_pct, regime_score):
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         
         cursor.execute("SELECT cash, total_value FROM paper_portfolio ORDER BY id DESC LIMIT 1")
-        row_port = cursor.fetchone()
-        cash, total_val = row_port if row_port else (100000.0, 100000.0)
+        cash, total_val = cursor.fetchone()
         
         df_pos = pd.read_sql("SELECT * FROM paper_positions", conn)
         open_positions = {row['symbol']: row for _, row in df_pos.iterrows()}
@@ -443,9 +374,7 @@ class DecisionAndPaperEngineV63:
             p_row = df.iloc[-2]
             current_prices[sym] = c_row['Close']
             
-            swing_low = p_row['Low']
-            atr_stop = p_row['Close'] - (2.0 * p_row['ATR'])
-            trailing_sl = max(pos['stop_loss'], min(swing_low, atr_stop))
+            trailing_sl = max(pos['stop_loss'], p_row['Close'] - (2.0 * p_row['ATR']))
             
             exit_flag = False
             exit_reason = ""
@@ -459,6 +388,14 @@ class DecisionAndPaperEngineV63:
                 exit_flag = True
                 exit_reason = "Take Profit 2 (3.5R) Hit"
                 exit_price = pos['tp2']
+            elif c_row['Close'] < c_row['EMA_20'] and pos['bars_held'] >= 3:
+                exit_flag = True
+                exit_reason = "EMA20 Breakdown"
+                exit_price = c_row['Close']
+            elif c_row['Quant_Score'] < 55.0:
+                exit_flag = True
+                exit_reason = "Score Deterioration (<55)"
+                exit_price = c_row['Close']
             elif pos['bars_held'] >= 30:
                 exit_flag = True
                 exit_reason = "Time Stop (30 Days)"
@@ -493,34 +430,17 @@ class DecisionAndPaperEngineV63:
                 
             c_row = df.iloc[-1]
             score = c_row['Quant_Score']
-            model_confidence = min(0.95, max(0.45, (score / 100.0) * 0.75 + 0.15))
+            model_confidence = min(0.92, max(0.45, (score / 100.0) * 0.70 + 0.12))
             
-            if score >= adaptive_threshold:
-                entry_p = c_row['Close'] * 1.001
-                sl_p = entry_p - (1.5 * c_row['ATR'])
-                tp_p = entry_p + (2.0 * c_row['ATR'])
-                rr_ratio = (tp_p - entry_p) / (entry_p - sl_p + 1e-10)
-                
-                if score >= 90:
-                    grade = "A+"
-                    decision = "🟢 GÜÇLÜ AL"
-                elif score >= 85:
-                    grade = "A"
-                    decision = "🟢 GÜÇLÜ AL"
-                elif score >= 80:
-                    grade = "B"
-                    decision = "🟢 AL"
-                else:
-                    grade = "C"
-                    decision = "🟢 AL"
-                    
-                reason = f"Kalite: {grade} | Trend OK | RS: {c_row['Composite_RS']*100:+.1f}% | R:R: {rr_ratio:.2f}"
+            if score >= 78.0 and regime != "STRONG BEAR" and model_confidence >= 0.60:
+                decision = "🟢 GÜÇLÜ AL" if score >= 88 else "🟢 AL"
+                reason = f"Minervini Trend OK | RS: {c_row['Composite_RS']*100:+.1f}% | RVOL: {c_row['RVOL']:.1f}x"
                 active_candidates.append({
                     'symbol': sym, 'score': score, 'confidence': model_confidence, 'decision': decision,
-                    'price': c_row['Close'], 'atr': c_row['ATR'], 'reason': reason, 'rr': rr_ratio
+                    'price': c_row['Close'], 'atr': c_row['ATR'], 'reason': reason
                 })
                 
-        active_candidates.sort(key=lambda x: (x['score'], x['rr']), reverse=True)
+        active_candidates.sort(key=lambda x: x['score'], reverse=True)
         
         max_slots = 5 - len(open_positions)
         for cand in active_candidates[:max_slots]:
@@ -557,7 +477,7 @@ class DecisionAndPaperEngineV63:
         return active_candidates, current_prices
 
 # ==============================================================================
-# 8. STREAMLIT UI & DASHBOARD INTERFACE
+# 7. STREAMLIT UI & DASHBOARD INTERFACE
 # ==============================================================================
 def main():
     DatabaseEngineV63.init_db()
@@ -572,7 +492,7 @@ def main():
     lookback = st.sidebar.slider("Veri Geçmişi (Gün - 3 Yıl Önerilir)", 300, 1000, 750)
     
     if st.sidebar.button("🚀 Tarama & Sanal İşlem Motorunu Çalıştır", use_container_width=True):
-        with st.spinner("BIST100 Verileri İndiriliyor & Gelişmiş Kalite Motoru Çalıştırılıyor..."):
+        with st.spinner("BIST100 Verileri İndiriliyor & Karar Motoru Çalıştırılıyor..."):
             start_date = datetime.now() - timedelta(days=lookback)
             raw_data = yf.download(symbols + ["XU100.IS"], start=start_date, progress=False, group_by='ticker')
             
@@ -587,23 +507,19 @@ def main():
                 except Exception:
                     continue
                     
-            regime, breadth_pct, regime_score, adaptive_threshold = MarketRegimeEngineV63.analyze_market(data_dict, df_xu100)
+            regime, breadth_pct, regime_score = MarketRegimeEngineV63.analyze_market(data_dict, df_xu100)
             
-            valid_data_dict = {}
             for sym, df in data_dict.items():
-                calc_df = TechnicalEngineV63.calculate_factors(df, df_xu100, regime_score)
-                if calc_df is not None:
-                    valid_data_dict[sym] = calc_df
+                data_dict[sym] = TechnicalEngineV63.calculate_factors(df, df_xu100, regime_score)
                 
-            candidates, current_prices = DecisionAndPaperEngineV63.run_execution(valid_data_dict, regime, breadth_pct, regime_score, adaptive_threshold)
+            candidates, current_prices = DecisionAndPaperEngineV63.run_execution(data_dict, regime, breadth_pct, regime_score)
             
-            st.session_state['data_dict'] = valid_data_dict
+            st.session_state['data_dict'] = data_dict
             st.session_state['regime'] = regime
             st.session_state['breadth'] = breadth_pct
-            st.session_state['adaptive_threshold'] = adaptive_threshold
             st.session_state['candidates'] = candidates
             st.session_state['prices'] = current_prices
-            st.success("Gelişmiş Tarama ve Sanal İşlem Güncellemesi Tamamlandı!")
+            st.success("Sanal İşlem Güncellemesi Tamamlandı!")
 
     if st.sidebar.button("🗑️ Sanal Portföyü Sıfırla (100k TL)"):
         DatabaseEngineV63.reset_database()
@@ -621,9 +537,9 @@ def main():
     m2.markdown(f'<div class="metric-card"><div class="metric-label">Sanal Nakit</div><div class="metric-value">{port_state["cash"]:,.2f} ₺</div></div>', unsafe_allow_html=True)
     m3.markdown(f'<div class="metric-card"><div class="metric-label">Net PnL</div><div class="metric-value" style="color:{"#10B981" if pnl_total>=0 else "#EF4444"};">{pnl_total:+,.2f} ₺ ({pnl_pct:+.2f}%)</div></div>', unsafe_allow_html=True)
     
-    reg_val = st.session_state.get('regime', 'GUCLU_BOGA')
+    reg_val = st.session_state.get('regime', 'NEUTRAL')
     breadth_val = st.session_state.get('breadth', 50.0)
-    m4.markdown(f'<div class="metric-card"><div class="metric-label">Piyasa Rejimi</div><div class="metric-value" style="font-size:1.2rem;">{reg_val}</div></div>', unsafe_allow_html=True)
+    m4.markdown(f'<div class="metric-card"><div class="metric-label">Piyasa Rejimi</div><div class="metric-value" style="font-size:1.3rem;">{reg_val}</div></div>', unsafe_allow_html=True)
     m5.markdown(f'<div class="metric-card"><div class="metric-label">BIST Breadth</div><div class="metric-value">{breadth_val:.1f}%</div></div>', unsafe_allow_html=True)
     
     st.markdown("<br>", unsafe_allow_html=True)
@@ -636,7 +552,7 @@ def main():
     ])
     
     with tab1:
-        st.subheader("🏆 Bugünün En Kaliteli Sinyalleri (Adaptive Quality Engine)")
+        st.subheader("🏆 Bugünün En Güçlü Sinyalleri (Decision Engine)")
         cands = st.session_state.get('candidates', [])
         if cands:
             for cand in cands:
@@ -648,7 +564,7 @@ def main():
                 </div>
                 """, unsafe_allow_html=True)
         else:
-            st.info("Piyasa rejimi ve adaptif filtreleme koşullarına uygun, yüksek kaliteli sinyal bulunmuyor.")
+            st.info("Bugün için 78+ puan alan yeni giriş sinyali bulunmuyor veya piyasa koşulları beklemede tutuyor.")
             
     with tab2:
         st.subheader("💼 Aktif Sanal Portföy Pozisyonları")
@@ -694,38 +610,23 @@ def main():
 
     with tab4:
         st.subheader("🧪 Geçmiş Günler Simülasyon Test Alanı")
-        st.markdown("Bu alan, ana portföyünü etkilemeden geçmiş periyotlarda sistemin kaliteli sinyal doğruluğunu test etmeni sağlar.")
+        st.markdown("Bu alan, ana portföyünü etkilemeden geçmiş periyotlarda sistemin hangi hisselerde alım-satım yapacağını test etmeni sağlar.")
         
         sim_days = st.slider("Simülasyon Yapılacak Geçmiş Gün Sayısı", 5, 120, 30)
         
         if st.button("🧪 Simülasyonu Başlat ve Test Et", use_container_width=True):
             data_dict = st.session_state.get('data_dict', {})
-            adaptive_thresh = st.session_state.get('adaptive_threshold', 75.0)
-            
             if not data_dict:
                 with st.spinner("Test verileri indiriliyor..."):
                     raw = yf.download(symbols + ["XU100.IS"], period="1y", progress=False, group_by='ticker')
                     df_xu = raw["XU100.IS"].dropna() if "XU100.IS" in raw else None
-                    regime, breadth_pct, regime_score, adaptive_thresh = MarketRegimeEngineV63.analyze_market(data_dict, df_xu)
-                    data_dict = {}
-                    for s in symbols:
-                        if s in raw:
-                            d_s = raw[s].dropna(how='all')
-                            if len(d_s) > 50:
-                                c_d = TechnicalEngineV63.calculate_factors(d_s, df_xu, regime_score)
-                                if c_d is not None:
-                                    data_dict[s] = c_d
+                    data_dict = {s: raw[s].dropna(how='all') for s in symbols if s in raw and len(raw[s].dropna(how='all')) > 50}
+                    for s, d in data_dict.items():
+                        data_dict[s] = TechnicalEngineV63.calculate_factors(d, df_xu)
             
             if data_dict:
-                sim_df, final_cash, metrics = SimulationEngineV63.run_backtest_simulation(data_dict, test_days=sim_days, adaptive_threshold=adaptive_thresh)
+                sim_df, final_cash = SimulationEngineV63.run_backtest_simulation(data_dict, test_days=sim_days)
                 st.success(f"Simülasyon tamamlandı! Kalan Sanal Nakit: {final_cash:,.2f} ₺")
-                
-                m_c1, m_c2, m_c3, m_c4 = st.columns(4)
-                m_c1.metric("Toplam İşlem", metrics.get('Total Trades', 0))
-                m_c2.metric("Simülasyon Win Rate", f"{metrics.get('Win Rate', 0.0):.1f}%")
-                m_c3.metric("Net PnL", f"{metrics.get('Net PnL', 0.0):+,.2f} ₺")
-                m_c4.metric("Profit Factor", f"{metrics.get('Profit Factor', 0.0):.2f}")
-                
                 if not sim_df.empty:
                     st.dataframe(sim_df.style.format({'Fiyat': '{:.2f} ₺', 'PnL ₺': '{:+,.2f} ₺', 'PnL %': '{:+.2%}'}), use_container_width=True)
                 else:
