@@ -187,7 +187,7 @@ class MarketRegimeEngineV63:
         if c_last > ema20.iloc[-1] and ema20.iloc[-1] > ema50.iloc[-1] and breadth_pct >= 60.0:
             regime = "GUCLU_BOGA"
             score_regime = 15.0
-            adaptive_threshold = 70.0  # Simülasyonda esneklik için optimize edildi
+            adaptive_threshold = 70.0
         elif c_last > ema50.iloc[-1] and breadth_pct >= 45.0:
             regime = "ZAYIF_BOGA"
             score_regime = 12.0
@@ -232,7 +232,7 @@ class TechnicalEngineV63:
         
         avg_vol_50 = volume.rolling(50).mean()
         avg_turnover_50 = (volume * close).rolling(50).mean()
-        df['Is_Liquid'] = (avg_vol_50 >= 30000) & (avg_turnover_50 >= 1000000) # Simülasyon esnekliği için optimize edildi
+        df['Is_Liquid'] = (avg_vol_50 >= 30000) & (avg_turnover_50 >= 1000000)
         
         df['EMA_10'] = close.ewm(span=10, adjust=False).mean()
         df['EMA_20'] = close.ewm(span=20, adjust=False).mean()
@@ -326,14 +326,13 @@ class TechnicalEngineV63:
         return df
 
 # ==============================================================================
-# 6. SIMULATION & BACKTEST ENGINE (DÜZELTİLMİŞ VE TETİKLEYİCİ)
+# 6. SIMULATION & BACKTEST ENGINE (30.000 TL & %2 SABİT KAR HEDEFİ)
 # ==============================================================================
 class SimulationEngineV63:
     @staticmethod
     def run_backtest_simulation(data_dict, test_days=30, adaptive_threshold=75.0):
         sim_log = []
         sim_cash = 100000.0
-        sim_portfolio_value = 100000.0
         sim_positions = {}
         
         if not data_dict:
@@ -353,16 +352,15 @@ class SimulationEngineV63:
                     price = float(row['Close'])
                     daily_prices[sym] = price
                     score = float(row.get('Quant_Score', 60.0))
-                    atr = float(row.get('ATR', price * 0.02))
                     
-                    # Simülasyon eşik kontrolü (esnek taban)
                     if score >= adaptive_threshold:
-                        day_candidates.append({'symbol': sym, 'score': score, 'price': price, 'atr': atr})
+                        day_candidates.append({'symbol': sym, 'score': score, 'price': price})
             
+            # Pozisyon çıkış kontrolü: %2 Kar veya Stop-Loss (-%5)
             for sym, pos in list(sim_positions.items()):
                 if sym in daily_prices:
                     cur_p = daily_prices[sym]
-                    if cur_p <= pos['stop_loss'] or cur_p >= pos['tp1']:
+                    if cur_p >= pos['tp1'] or cur_p <= pos['stop_loss']:
                         pnl = (cur_p - pos['entry_price']) * pos['shares']
                         pnl_pct = (cur_p - pos['entry_price']) / pos['entry_price']
                         sim_cash += (pos['shares'] * cur_p)
@@ -372,28 +370,24 @@ class SimulationEngineV63:
                         del sim_positions[sym]
             
             day_candidates.sort(key=lambda x: x['score'], reverse=True)
-            active_count = len(sim_positions)
             
-            for cand in day_candidates[:3]:
+            # Sadece tek bir hisse veya 30.000 TL bütçe ile işlem açma (Portföyün tamamı / 30k TL kuralı)
+            for cand in day_candidates[:1]:
                 sym = cand['symbol']
-                if sym not in sim_positions and active_count < 5:
+                if sym not in sim_positions and not sim_positions: # Aynı anda tek pozisyon kuralı (30k TL tam bütçe)
                     price = cand['price']
-                    stop_loss = price - (1.5 * cand['atr'])
-                    tp1 = price + (2.0 * cand['atr'])
+                    target_allocation = 30000.0
+                    shares = int(target_allocation / (price + 1e-10))
                     
-                    risk = price - stop_loss
-                    reward = tp1 - price
-                    rr = reward / (risk + 1e-10)
-                    
-                    if rr >= 1.2: # Esnek R:R
-                        shares = int((sim_portfolio_value * 0.15) / (price + 1e-10))
-                        if shares > 0 and sim_cash >= (shares * price):
-                            sim_cash -= (shares * price)
-                            sim_positions[sym] = {'entry_price': price, 'shares': shares, 'stop_loss': stop_loss, 'tp1': tp1, 'score': cand['score']}
-                            sim_log.append({
-                                "Tarih": day_str, "Hisse": sym, "İşlem": "AL", "Fiyat": price, "PnL ₺": 0.0, "PnL %": 0.0, "Score": cand['score']
-                            })
-                            active_count += 1
+                    if shares > 0 and sim_cash >= (shares * price):
+                        sim_cash -= (shares * price)
+                        tp1 = price * 1.02      # Sabit %2 Kar Hedefi
+                        stop_loss = price * 0.95 # Güvenli Stop-Loss
+                        
+                        sim_positions[sym] = {'entry_price': price, 'shares': shares, 'stop_loss': stop_loss, 'tp1': tp1, 'score': cand['score']}
+                        sim_log.append({
+                            "Tarih": day_str, "Hisse": sym, "İşlem": "AL", "Fiyat": price, "PnL ₺": 0.0, "PnL %": 0.0, "Score": cand['score']
+                        })
                             
         df_log = pd.DataFrame(sim_log)
         
@@ -418,7 +412,7 @@ class SimulationEngineV63:
         return df_log, sim_cash, metrics
 
 # ==============================================================================
-# 7. DECISION ENGINE & PAPER TRADING EXECUTION
+# 7. DECISION ENGINE & PAPER TRADING EXECUTION (30K TL & %2 KÂR HEDEFİ)
 # ==============================================================================
 class DecisionAndPaperEngineV63:
     @staticmethod
@@ -440,25 +434,21 @@ class DecisionAndPaperEngineV63:
                 continue
             df = data_dict[sym]
             c_row = df.iloc[-1]
-            p_row = df.iloc[-2]
             current_prices[sym] = c_row['Close']
-            
-            swing_low = p_row['Low']
-            atr_stop = p_row['Close'] - (2.0 * p_row['ATR'])
-            trailing_sl = max(pos['stop_loss'], min(swing_low, atr_stop))
             
             exit_flag = False
             exit_reason = ""
             exit_price = c_row['Close']
             
-            if c_row['Low'] <= trailing_sl:
+            # Sabit %2 Kar Hedefi veya Stop-Loss Kontrolü
+            if c_row['High'] >= pos['tp1']:
                 exit_flag = True
-                exit_reason = "Trailing Stop Loss Hit"
-                exit_price = trailing_sl
-            elif c_row['High'] >= pos['tp2']:
+                exit_reason = "Take Profit (%2 Kar) Hit"
+                exit_price = pos['tp1']
+            elif c_row['Low'] <= pos['stop_loss']:
                 exit_flag = True
-                exit_reason = "Take Profit 2 (3.5R) Hit"
-                exit_price = pos['tp2']
+                exit_reason = "Stop Loss Hit"
+                exit_price = pos['stop_loss']
             elif pos['bars_held'] >= 30:
                 exit_flag = True
                 exit_reason = "Time Stop (30 Days)"
@@ -483,7 +473,7 @@ class DecisionAndPaperEngineV63:
                 cursor.execute("DELETE FROM paper_positions WHERE symbol = ?", (sym,))
                 del open_positions[sym]
             else:
-                cursor.execute("UPDATE paper_positions SET stop_loss = ?, bars_held = bars_held + 1 WHERE symbol = ?", (trailing_sl, sym))
+                cursor.execute("UPDATE paper_positions WHERE bars_held = bars_held + 1 WHERE symbol = ?", (sym,))
 
         active_candidates = []
         for sym, df in data_dict.items():
@@ -497,43 +487,29 @@ class DecisionAndPaperEngineV63:
             
             if score >= adaptive_threshold:
                 entry_p = c_row['Close'] * 1.001
-                sl_p = entry_p - (1.5 * c_row['ATR'])
-                tp_p = entry_p + (2.0 * c_row['ATR'])
-                rr_ratio = (tp_p - entry_p) / (entry_p - sl_p + 1e-10)
+                tp_p = entry_p * 1.02      # %2 Sabit Hedef
+                sl_p = entry_p * 0.95      # Sabit Stop
                 
-                if score >= 90:
-                    grade = "A+"
-                    decision = "🟢 GÜÇLÜ AL"
-                elif score >= 85:
-                    grade = "A"
-                    decision = "🟢 GÜÇLÜ AL"
-                elif score >= 80:
-                    grade = "B"
-                    decision = "🟢 AL"
-                else:
-                    grade = "C"
-                    decision = "🟢 AL"
-                    
-                reason = f"Kalite: {grade} | Trend OK | RS: {c_row['Composite_RS']*100:+.1f}% | R:R: {rr_ratio:.2f}"
+                grade = "A+" if score >= 90 else ("A" if score >= 85 else "B")
+                decision = "🟢 GÜÇLÜ AL"
+                
+                reason = f"Kalite: {grade} | Hedef: %2 Net Kar | RS: {c_row['Composite_RS']*100:+.1f}%"
                 active_candidates.append({
                     'symbol': sym, 'score': score, 'confidence': model_confidence, 'decision': decision,
-                    'price': c_row['Close'], 'atr': c_row['ATR'], 'reason': reason, 'rr': rr_ratio
+                    'price': c_row['Close'], 'tp1': tp_p, 'sl': sl_p, 'reason': reason
                 })
                 
-        active_candidates.sort(key=lambda x: (x['score'], x['rr']), reverse=True)
+        active_candidates.sort(key=lambda x: x['score'], reverse=True)
         
-        max_slots = 5 - len(open_positions)
-        for cand in active_candidates[:max_slots]:
+        # Eğer açık pozisyon yoksa ve en az 30.000 TL nakit varsa, en iyi adaya 30.000 TL'lik işlem aç
+        if len(open_positions) == 0 and active_candidates:
+            cand = active_candidates[0]
             entry_price = cand['price'] * 1.001
-            stop_loss = entry_price - (1.5 * cand['atr'])
-            tp1 = entry_price + (2.0 * cand['atr'])
-            tp2 = entry_price + (3.5 * cand['atr'])
+            tp1 = cand['tp1']
+            stop_loss = cand['sl']
             
-            risk_per_share = entry_price - stop_loss
-            max_risk_amount = total_val * 0.015
-            max_pos_val = total_val * 0.20
-            
-            shares = int(min(max_risk_amount / (risk_per_share + 1e-10), max_pos_val / entry_price))
+            target_allocation = 30000.0
+            shares = int(target_allocation / (entry_price + 1e-10))
             total_cost = shares * entry_price * 1.000525
             
             if shares > 0 and cash >= total_cost:
@@ -542,7 +518,7 @@ class DecisionAndPaperEngineV63:
                 cursor.execute("""
                     INSERT INTO paper_positions (symbol, entry_date, entry_price, shares, stop_loss, tp1, tp2, quant_score, model_confidence, bars_held)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-                """, (cand['symbol'], now_str, entry_price, shares, stop_loss, tp1, tp2, cand['score'], cand['confidence']))
+                """, (cand['symbol'], now_str, entry_price, shares, stop_loss, tp1, tp1, cand['score'], cand['confidence']))
 
         df_pos_upd = pd.read_sql("SELECT * FROM paper_positions", conn)
         mtm_val = sum([r['shares'] * current_prices.get(r['symbol'], r['entry_price']) for _, r in df_pos_upd.iterrows()]) if not df_pos_upd.empty else 0.0
@@ -630,28 +606,28 @@ def main():
     
     tab1, tab2, tab3, tab4 = st.tabs([
         "🎯 BUGÜNÜN AL SİNYALLERİ", 
-        "💼 AÇIK POZİSYONLAR (TUT / SAT)", 
+        "💼 AÇIK POZİSYONLAR (%2 HEDEF)", 
         "📜 İŞLEM DEFTERİ & PERFORMANS",
         "🧪 BACKTEST & SİMÜLASYON ALANI"
     ])
     
     with tab1:
-        st.subheader("🏆 Bugünün En Kaliteli Sinyalleri (Adaptive Quality Engine)")
+        st.subheader("🏆 Bugünün En Kaliteli Sinyalleri (30K TL Bütçe & %2 Hedef)")
         cands = st.session_state.get('candidates', [])
         if cands:
             for cand in cands:
                 st.markdown(f"""
                 <div class="signal-card-buy">
-                    <h3 style="margin:0px; color:#F8FAFC;">{cand['decision']} <b>{cand['symbol']}</b> — Quant Skor: {cand['score']:.0f}/100 | Model Güveni: %{cand['confidence']*100:.1f}</h3>
-                    <p style="margin-top:6px; margin-bottom:4px; color:#CBD5E1;"><b>Giriş (T+1):</b> {cand['price']*1.001:.2f} ₺ | <b>Stop:</b> {cand['price']-1.5*cand['atr']:.2f} ₺ | <b>TP1 (2R):</b> {cand['price']+2.0*cand['atr']:.2f} ₺ | <b>TP2 (3.5R):</b> {cand['price']+3.5*cand['atr']:.2f} ₺</p>
+                    <h3 style="margin:0px; color:#F8FAFC;">{cand['decision']} <b>{cand['symbol']}</b> — Quant Skor: {cand['score']:.0f}/100</h3>
+                    <p style="margin-top:6px; margin-bottom:4px; color:#CBD5E1;"><b>Giriş:</b> {cand['price']*1.001:.2f} ₺ | <b>Hedef (%2 Kâr):</b> {cand['tp1']:.2f} ₺ | <b>Stop:</b> {cand['sl']:.2f} ₺</p>
                     <p style="margin:0px; color:#94A3B8;"><b>Gerekçe:</b> {cand['reason']}</p>
                 </div>
                 """, unsafe_allow_html=True)
         else:
-            st.info("Piyasa rejimi ve adaptif filtreleme koşullarına uygun, yüksek kaliteli sinyal bulunmuyor.")
+            st.info("Piyasa koşullarına uygun sinyal bulunmuyor.")
             
     with tab2:
-        st.subheader("💼 Aktif Sanal Portföy Pozisyonları")
+        st.subheader("💼 Aktif 30K TL Pozisyonu")
         if not df_pos.empty:
             df_disp = df_pos.copy()
             df_disp['Güncel Fiyat'] = df_disp['symbol'].apply(lambda x: current_prices.get(x, 0.0))
@@ -659,10 +635,10 @@ def main():
             df_disp['Anlık Kar %'] = ((df_disp['Güncel Fiyat'] - df_disp['entry_price']) / df_disp['entry_price']) * 100.0
             
             st.dataframe(
-                df_disp[['symbol', 'entry_date', 'entry_price', 'Güncel Fiyat', 'shares', 'stop_loss', 'tp1', 'tp2', 'Anlık Kar ₺', 'Anlık Kar %', 'bars_held']]
+                df_disp[['symbol', 'entry_date', 'entry_price', 'Güncel Fiyat', 'shares', 'stop_loss', 'tp1', 'Anlık Kar ₺', 'Anlık Kar %', 'bars_held']]
                 .style.format({
                     'entry_price': '{:.2f} ₺', 'Güncel Fiyat': '{:.2f} ₺', 'stop_loss': '{:.2f} ₺',
-                    'tp1': '{:.2f} ₺', 'tp2': '{:.2f} ₺', 'Anlık Kar ₺': '{:+,.2f} ₺', 'Anlık Kar %': '{:+.2f}%'
+                    'tp1': '{:.2f} ₺', 'Anlık Kar ₺': '{:+,.2f} ₺', 'Anlık Kar %': '{:+.2f}%'
                 }),
                 use_container_width=True
             )
@@ -693,9 +669,7 @@ def main():
             st.info("Henüz kapanmış işlem kaydı bulunmuyor.")
 
     with tab4:
-        st.subheader("🧪 Geçmiş Günler Simülasyon Test Alanı")
-        st.markdown("Bu alan, ana portföyünü etkilemeden geçmiş periyotlarda sistemin kaliteli sinyal doğruluğunu test etmeni sağlar.")
-        
+        st.subheader("🧪 Geçmiş Günler Simülasyon Test Alanı (30K TL & %2 Hedef)")
         sim_days = st.slider("Simülasyon Yapılacak Geçmiş Gün Sayısı", 5, 120, 30)
         
         if st.button("🧪 Simülasyonu Başlat ve Test Et", use_container_width=True):
@@ -735,3 +709,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
