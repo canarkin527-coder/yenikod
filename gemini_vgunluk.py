@@ -184,7 +184,6 @@ class MultiStockPortfolioEngine:
 # 5. STREAMLIT MODERN ARAYÜZÜ VE YÜRÜTME
 # ==========================================
 def main():
-    # Modern geniş arayüz ve sayfa yapılandırması
     st.set_page_config(
         page_title="Quant Master v56.5", 
         page_icon="📈", 
@@ -192,7 +191,6 @@ def main():
         initial_sidebar_state="expanded"
     )
     
-    # Özel CSS ile Modern UI Dokunuşları (Koyu Tema Uyumlu Kartlar)
     st.markdown("""
         <style>
             .main { background-color: #0e1117; }
@@ -201,29 +199,26 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    # Başlık Alanı
     st.markdown("# 🏆 QUANT MASTER v56.5")
     st.markdown("### *Production-Grade Multi-Asset Portfolio Backtesting Engine*")
     st.markdown("---")
     
     if not SKLEARN_AVAILABLE:
-        st.error("⚠️ Kritik Uyarı: `scikit-learn` kütüphanesi ortamda bulunamadı! Lütfen `requirements.txt` dosyanıza `scikit-learn` ekleyin veya terminalden `pip install scikit-learn` komutunu çalıştırın.")
+        st.error("⚠️ Kritik Uyarı: `scikit-learn` kütüphanesi ortamda bulunamadı!")
 
-    # Sidebar Tasarımı
     with st.sidebar:
         st.markdown("### ⚙️ Simülasyon Paneli")
         st.markdown("---")
         capital = st.number_input("💰 Başlangıç Sermayesi (TL)", value=1000000.0, step=100000.0, format="%.2f")
         risk_per_trade = st.slider("🛡️ İşlem Başı Risk (%)", 0.5, 5.0, 2.0, 0.5) / 100
         slippage = st.slider("⚡ Slipaj Oranı (%)", 0.0, 1.0, 0.1, 0.05) / 100
-        comm_rate = st.number_input(" COMMISSION Komisyon (On Binde)", value=5.0) / 10000
+        comm_rate = st.number_input(" Komisyon (On Binde)", value=5.0) / 10000
         
         st.markdown("---")
         run_btn = st.button("🚀 Portföyü Simüle Et", type="primary", use_container_width=True)
     
     tickers = get_bist100_tickers()
     
-    # Ana Ekran Bilgi Kartları
     col_info1, col_info2, col_info3 = st.columns(3)
     col_info1.metric("İzlenen Varlık Havuzu", f"{len(tickers)} Adet")
     col_info2.metric("Strateji Yapısı", "SMC + Wilder RSI")
@@ -236,12 +231,11 @@ def main():
         signals = {}
         errors = []
         
-        # Modern İlerleme Çubuğu ve Durum Kutusu
         progress_bar = st.progress(0)
         status_text = st.empty()
         
         for i, ticker in enumerate(tickers):
-            status_text.text(İşleniyor... [{i+1}/{len(tickers)}] {ticker})
+            status_text.text(f"İşleniyor... [{i+1}/{len(tickers)}] {ticker}")
             try:
                 df = yf.download(ticker, start="2023-01-01", progress=False)
                 if df.empty or len(df) < 200:
@@ -266,7 +260,6 @@ def main():
         status_text.empty()
         progress_bar.empty()
             
-        # Sonuç Metrikleri
         st.markdown("### 📊 Tarama ve Çalıştırma Raporu")
         r_col1, r_col2 = st.columns(2)
         r_col1.metric("✅ Başarılı Taranan Varlık", len(price_data))
@@ -310,7 +303,8 @@ def main():
                 st.markdown("### 📑 Son Gerçekleşen İşlem Logları")
                 st.dataframe(trade_logs.tail(20), use_container_width=True)
         else:
-            st.warning("⚠️ İşlem yapabileceğ yeterli veri çekilemedi.")
+            st.warning("⚠️ İşlem yapabilecek yeterli veri çekilemedi.")
 
 if __name__ == "__main__":
     main()
+
