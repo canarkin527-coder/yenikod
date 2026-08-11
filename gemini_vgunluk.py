@@ -1,12 +1,12 @@
 # ============================================================
-# QUANT MASTER v76 — MODERN STREAMLIT INTERFACE (LIGHT MODE)
+# QUANT MASTER v76 — MODERN STREAMLIT INTERFACE (TRADINGVIEW STYLE)
 # ============================================================
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 
-# --- MOTOR KODLARI (Aynen Korunmuştur) ---
+# --- ÖNCEKİ MOTOR KODLARI (Aynı Bırakılmıştır) ---
 
 class PointInTimeRSEngine:
     @staticmethod
@@ -312,7 +312,7 @@ class PrecisionWFOEngineV76:
         }
 
 
-# --- MODERN STREAMLIT ARAYÜZÜ (LIGHT MODE) ---
+# --- MODERN TRADINGVIEW TARZI STREAMLIT ARAYÜZÜ ---
 
 st.set_page_config(
     page_title="QUANT MASTER v76 — Terminal",
@@ -321,22 +321,24 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Aydınlık Tema CSS Enjeksiyonu
+# TradingView / Modern Koyu Tema CSS Enjeksiyonu
 st.markdown("""
     <style>
     .stApp {
-        background-color: #ffffff;
-        color: #1e222d;
+        background-color: #131722;
+        color: #d1d4dc;
         font-family: -apple-system, BlinkMacSystemFont, "Trebuchet MS", Roboto, Ubuntu, sans-serif;
     }
     header {visibility: hidden;}
+    .css-18e3th9 {padding-top: 0rem;}
     
+    /* Metrik Kartları */
     .metric-card {
-        background-color: #f8f9fa;
-        border: 1px solid #e0e3eb;
+        background-color: #1e222d;
+        border: 1px solid #2a2e39;
         border-radius: 6px;
         padding: 16px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
     }
     .metric-title {
         font-size: 12px;
@@ -357,16 +359,25 @@ st.markdown("""
         color: #089981;
         margin-top: 4px;
     }
+    
+    /* Sidebar */
     [data-testid="stSidebar"] {
-        background-color: #f1f3f6;
-        border-right: 1px solid #e0e3eb;
+        background-color: #181c25;
+        border-right: 1px solid #2a2e39;
+    }
+    
+    /* Tablolar */
+    dataframe {
+        background-color: #1e222d !important;
     }
     </style>
 """, unsafe_allow_html=True)
 
+# Üst Başlık
 st.markdown("## 📊 QUANT MASTER v76 — Precision WFO & Signal Terminal")
-st.markdown("<hr style='border: 1px solid #e0e3eb; margin-top: 0px; margin-bottom: 20px;'>", unsafe_allow_html=True)
+st.markdown("<hr style='border: 1px solid #2a2e39; margin-top: 0px; margin-bottom: 20px;'>", unsafe_allow_html=True)
 
+# Sidebar Yapılandırması
 with st.sidebar:
     st.markdown("### ⚙️ Terminal Ayarları")
     initial_capital = st.number_input("Başlangıç Sermayesi (TL)", value=100000.0, step=10000.0)
@@ -377,8 +388,10 @@ with st.sidebar:
     
     run_btn = st.button("🚀 Backtest Çalıştır", type="primary", use_container_width=True)
 
+# Ana Ekran / Veri Simülasyonu (Demo veya Yükleme)
 if run_btn:
     with st.spinner("Piyasa verileri işleniyor ve Point-in-Time RS hesaplanıyor..."):
+        # Örnek veri seti oluşturma (Simülasyon için sentetik BIST100 verisi)
         np.random.seed(42)
         dates = pd.date_range(start="2024-01-01", periods=500, freq="B")
         
@@ -401,6 +414,7 @@ if run_btn:
             
         pit_rs_dict = PointInTimeRSEngine.compute_pit_composite_rs(universe_dfs)
         
+        # Test için ilk hisse seçimi
         test_ticker = tickers[0]
         engine = PrecisionWFOEngineV76(
             train_window=int(train_window),
@@ -412,6 +426,7 @@ if run_btn:
         
         results = engine.run_backtest(universe_dfs[test_ticker], benchmark_df, pit_rs_dict[test_ticker])
         
+        # Üst Metrik Kartları (TradingView Tarzı)
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.markdown(f"""
@@ -445,18 +460,23 @@ if run_btn:
             
         st.markdown("<br>", unsafe_allow_html=True)
         
+        # Grafik ve Tablolar
         tab1, tab2, tab3 = st.tabs(["📈 Sermaye Eğrisi (Equity)", "📊 Sınıf Bazlı Performans", "📋 Trade Defteri"])
         
         with tab1:
             if not results['Equity'].empty:
                 chart_df = results['Equity'].set_index("Date")
-                st.line_chart(chart_df["NAV"])
+                st.line_chart(chart_df["NAV"], color="#2962ff")
             else:
                 st.info("Gösterilecek equity verisi bulunamadı.")
                 
         with tab2:
             class_report_df = pd.DataFrame(results['By_Class']).T
-            st.dataframe(class_report_df, use_container_width=True)
+            st.dataframe(class_report_df.style.format({
+                "Win_Rate": "{:.2f}%",
+                "Profit_Factor": "{:.2f}",
+                "Avg_Return": "{:.2f}%"
+            }), use_container_width=True)
             
         with tab3:
             if results['Trades']:
