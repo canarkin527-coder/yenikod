@@ -1,5 +1,5 @@
 # ============================================================
-# QUANT MASTER v76 — MODERN STREAMLIT INTERFACE (TRADINGVIEW STYLE - FIXED)
+# QUANT MASTER v76 — MODERN STREAMLIT INTERFACE (LIGHT MODE)
 # ============================================================
 
 import streamlit as st
@@ -312,7 +312,7 @@ class PrecisionWFOEngineV76:
         }
 
 
-# --- MODERN STREAMLIT ARAYÜZÜ ---
+# --- MODERN STREAMLIT ARAYÜZÜ (LIGHT MODE) ---
 
 st.set_page_config(
     page_title="QUANT MASTER v76 — Terminal",
@@ -321,22 +321,22 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# TradingView / Modern Koyu Tema CSS Enjeksiyonu
+# Aydınlık Tema CSS Enjeksiyonu
 st.markdown("""
     <style>
     .stApp {
-        background-color: #131722;
-        color: #d1d4dc;
+        background-color: #ffffff;
+        color: #1e222d;
         font-family: -apple-system, BlinkMacSystemFont, "Trebuchet MS", Roboto, Ubuntu, sans-serif;
     }
     header {visibility: hidden;}
     
     .metric-card {
-        background-color: #1e222d;
-        border: 1px solid #2a2e39;
+        background-color: #f8f9fa;
+        border: 1px solid #e0e3eb;
         border-radius: 6px;
         padding: 16px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
     }
     .metric-title {
         font-size: 12px;
@@ -358,14 +358,14 @@ st.markdown("""
         margin-top: 4px;
     }
     [data-testid="stSidebar"] {
-        background-color: #181c25;
-        border-right: 1px solid #2a2e39;
+        background-color: #f1f3f6;
+        border-right: 1px solid #e0e3eb;
     }
     </style>
 """, unsafe_allow_html=True)
 
 st.markdown("## 📊 QUANT MASTER v76 — Precision WFO & Signal Terminal")
-st.markdown("<hr style='border: 1px solid #2a2e39; margin-top: 0px; margin-bottom: 20px;'>", unsafe_allow_html=True)
+st.markdown("<hr style='border: 1px solid #e0e3eb; margin-top: 0px; margin-bottom: 20px;'>", unsafe_allow_html=True)
 
 with st.sidebar:
     st.markdown("### ⚙️ Terminal Ayarları")
