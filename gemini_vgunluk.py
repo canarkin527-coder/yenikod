@@ -1,21 +1,28 @@
 # ============================================================
-# QUANT MASTER v76 — MODERN STREAMLIT INTERFACE (TRADINGVIEW STYLE)
+# QUANT MASTER v76 — PRECISION POINT-IN-TIME WFO ENGINE
 # ============================================================
 
-import streamlit as st
 import pandas as pd
 import numpy as np
 
-# --- ÖNCEKİ MOTOR KODLARI (Aynı Bırakılmıştır) ---
-
 class PointInTimeRSEngine:
+    """
+    v76 Point-in-Time Composite Cross-Sectional RS Engine:
+    - Geleceğe dönük veri sızıntısını (data leakage) engellemek için 
+      her gün yalnızca o güne kadar bilinen fiyatları kullanarak 
+      BIST100 evreninde 20, 60 ve 120 günlük persentil sıralaması yapar.
+    """
     @staticmethod
     def compute_pit_composite_rs(universe_dfs: dict) -> dict:
         lookbacks = {20: 0.20, 60: 0.50, 120: 0.30}
+        max_lb = max(lookbacks.keys())
+        
+        # Ortak tarih indeksi
         sample_df = next(iter(universe_dfs.values()))
         dates = sample_df.index
         tickers = list(universe_dfs.keys())
         
+        # Tüm kapanış fiyatlarını tek bir DataFrame'de birleştir
         close_dict = {}
         for t in tickers:
             df = universe_dfs[t]
@@ -23,16 +30,23 @@ class PointInTimeRSEngine:
                 close_dict[t] = pd.to_numeric(df["Close"], errors="coerce")
         
         close_df = pd.DataFrame(close_dict).sort_index()
+        
+        # Günlük bazda (point-in-time) geçmişe dönük momentum ve persentil hesaplama
+        # Her gün için sadece o güne kadarki veriler kullanılır (rolling/shift kullanılmaz, tarihsel dilim esastır)
         composite_results = {t: pd.Series(50.0, index=dates) for t in tickers}
         
+        # Performans için vektörize rolling return ve rank
         mom_dfs = {}
         for lb in lookbacks.keys():
             mom_dfs[lb] = close_df / close_df.shift(lb) - 1.0
             
+        # Günlük cross-sectional rank
+        # axis=1 üzerinde rank(pct=True) her gün BIST100 içindeki sıralamayı verir
         pct_dfs = {}
         for lb in lookbacks.keys():
             pct_dfs[lb] = mom_dfs[lb].rank(axis=1, method="average", pct=True) * 100.0
             
+        # Kompozit RS hesaplama
         final_composite = pd.DataFrame(0.0, index=close_df.index, columns=tickers)
         for lb, weight in lookbacks.items():
             if lb in pct_dfs:
@@ -48,6 +62,13 @@ class PointInTimeRSEngine:
 
 
 class FourStageMarketRegimeEngine:
+    """
+    v76 Dört Rejimli Piyasa Filtresi (BIST100):
+    - STRONG_BULL: A+ sinyallere tam izin
+    - BULL: A sinyallere izin
+    - NEUTRAL: Sadece WATCH
+    - BEAR: NO TRADE (Sinyal yok)
+    """
     @staticmethod
     def evaluate_regime(benchmark_df: pd.DataFrame) -> pd.Series:
         if benchmark_df is None or benchmark_df.empty:
@@ -64,11 +85,18 @@ class FourStageMarketRegimeEngine:
             (close > ema200)
         ]
         choices = ["STRONG_BULL", "BULL", "NEUTRAL"]
+        
         regime = np.select(conditions, choices, default="BEAR")
         return pd.Series(regime, index=benchmark_df.index)
 
 
 class PrecisionWFOEngineV76:
+    """
+    v76 Birleşik OOS WFO Motoru:
+    - Her pencerede sıfırdan 100.000 TL ile başlamak yerine kümülatif (birleşik) Equity Curve üretir.
+    - Point-in-time Composite RS ve Dört Rejimli piyasa filtresi kullanır.
+    - A+, A ve WATCH sınıflarının performansını bağımsız olarak raporlar.
+    """
     def __init__(self, train_window: int = 126, test_window: int = 63, initial_capital: float = 100000.0, commission: float = 0.001, slippage: float = 0.0002):
         self.train_window = train_window
         self.test_window = test_window
@@ -88,6 +116,7 @@ class PrecisionWFOEngineV76:
         regime_series = FourStageMarketRegimeEngine.evaluate_regime(benchmark_df)
         processed_full = self._compute_factors(df, pit_rs_series)
 
+        # Kümülatif portföy sermayesi takibi
         current_cash = self.initial_capital
         current_shares = 0.0
         entry_price = 0.0
@@ -99,6 +128,7 @@ class PrecisionWFOEngineV76:
             test_start = start_idx + self.train_window
             test_finish = min(test_start + self.test_window, total_len)
             
+            # Geçmiş warm-up bağlamı
             context_start = max(0, test_start - 250)
             context_df = processed_full.iloc[context_start:test_finish].copy()
             signaled_context = self._generate_signals(context_df, regime_series)
@@ -108,6 +138,7 @@ class PrecisionWFOEngineV76:
                 start_idx += self.test_window
                 continue
 
+            # OOS Simülasyonu (Kümülatif sermaye akışı ile)
             current_cash, current_shares, entry_price, entry_class, stop_loss, take_profit, trades, equity = self._execute_oos_cumulative(
                 test_df, current_cash, current_shares, entry_price, entry_class, stop_loss, take_profit
             )
@@ -310,184 +341,4 @@ class PrecisionWFOEngineV76:
             "Trades": trades,
             "Equity": eq_df
         }
-
-
-# --- MODERN TRADINGVIEW TARZI STREAMLIT ARAYÜZÜ ---
-
-st.set_page_config(
-    page_title="QUANT MASTER v76 — Terminal",
-    page_icon="📈",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# TradingView / Modern Koyu Tema CSS Enjeksiyonu
-st.markdown("""
-    <style>
-    .stApp {
-        background-color: #131722;
-        color: #d1d4dc;
-        font-family: -apple-system, BlinkMacSystemFont, "Trebuchet MS", Roboto, Ubuntu, sans-serif;
-    }
-    header {visibility: hidden;}
-    .css-18e3th9 {padding-top: 0rem;}
-    
-    /* Metrik Kartları */
-    .metric-card {
-        background-color: #1e222d;
-        border: 1px solid #2a2e39;
-        border-radius: 6px;
-        padding: 16px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-    }
-    .metric-title {
-        font-size: 12px;
-        color: #787b86;
-        text-transform: uppercase;
-        font-weight: 600;
-        letter-spacing: 0.5px;
-    }
-    .metric-value {
-        font-size: 24px;
-        font-weight: 700;
-        color: #2962ff;
-        margin-top: 4px;
-    }
-    .metric-value-green {
-        font-size: 24px;
-        font-weight: 700;
-        color: #089981;
-        margin-top: 4px;
-    }
-    
-    /* Sidebar */
-    [data-testid="stSidebar"] {
-        background-color: #181c25;
-        border-right: 1px solid #2a2e39;
-    }
-    
-    /* Tablolar */
-    dataframe {
-        background-color: #1e222d !important;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
-# Üst Başlık
-st.markdown("## 📊 QUANT MASTER v76 — Precision WFO & Signal Terminal")
-st.markdown("<hr style='border: 1px solid #2a2e39; margin-top: 0px; margin-bottom: 20px;'>", unsafe_allow_html=True)
-
-# Sidebar Yapılandırması
-with st.sidebar:
-    st.markdown("### ⚙️ Terminal Ayarları")
-    initial_capital = st.number_input("Başlangıç Sermayesi (TL)", value=100000.0, step=10000.0)
-    train_window = st.number_input("Train Penceresi", value=126, step=10)
-    test_window = st.number_input("Test Penceresi (OOS)", value=63, step=5)
-    commission = st.number_input("Komisyon Oranı", value=0.001, format="%.4f")
-    slippage = st.number_input("Slippage Oranı", value=0.0002, format="%.5f")
-    
-    run_btn = st.button("🚀 Backtest Çalıştır", type="primary", use_container_width=True)
-
-# Ana Ekran / Veri Simülasyonu (Demo veya Yükleme)
-if run_btn:
-    with st.spinner("Piyasa verileri işleniyor ve Point-in-Time RS hesaplanıyor..."):
-        # Örnek veri seti oluşturma (Simülasyon için sentetik BIST100 verisi)
-        np.random.seed(42)
-        dates = pd.date_range(start="2024-01-01", periods=500, freq="B")
-        
-        bench_close = 100 * (1 + np.random.normal(0.0005, 0.015, len(dates))).cumprod()
-        benchmark_df = pd.DataFrame({
-            "Open": bench_close * 0.99, "High": bench_close * 1.01,
-            "Low": bench_close * 0.98, "Close": bench_close,
-            "Volume": np.random.randint(1000000, 5000000, len(dates))
-        }, index=dates)
-        
-        tickers = ["GARAN.IS", "THYAO.IS", "AKBNK.IS", "EREGL.IS", "KCHOL.IS"]
-        universe_dfs = {}
-        for t in tickers:
-            close = 50 * (1 + np.random.normal(0.0008, 0.02, len(dates))).cumprod()
-            universe_dfs[t] = pd.DataFrame({
-                "Open": close * 0.99, "High": close * 1.02,
-                "Low": close * 0.97, "Close": close,
-                "Volume": np.random.randint(500000, 2000000, len(dates))
-            }, index=dates)
-            
-        pit_rs_dict = PointInTimeRSEngine.compute_pit_composite_rs(universe_dfs)
-        
-        # Test için ilk hisse seçimi
-        test_ticker = tickers[0]
-        engine = PrecisionWFOEngineV76(
-            train_window=int(train_window),
-            test_window=int(test_window),
-            initial_capital=float(initial_capital),
-            commission=float(commission),
-            slippage=float(slippage)
-        )
-        
-        results = engine.run_backtest(universe_dfs[test_ticker], benchmark_df, pit_rs_dict[test_ticker])
-        
-        # Üst Metrik Kartları (TradingView Tarzı)
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.markdown(f"""
-                <div class='metric-card'>
-                    <div class='metric-title'>Toplam Getiri</div>
-                    <div class='metric-value-green'>%{results['Total_Return_Pct']:.2f}</div>
-                </div>
-            """, unsafe_allow_html=True)
-        with col2:
-            st.markdown(f"""
-                <div class='metric-card'>
-                    <div class='metric-title'>Son Sermaye</div>
-                    <div class='metric-value'>₺{initial_capital * (1 + results['Total_Return_Pct']/100):,.2f}</div>
-                </div>
-            """, unsafe_allow_html=True)
-        with col3:
-            total_trades = sum([v['Trades'] for v in results['By_Class'].values()])
-            st.markdown(f"""
-                <div class='metric-card'>
-                    <div class='metric-title'>Toplam İşlem</div>
-                    <div class='metric-value'>{total_trades}</div>
-                </div>
-            """, unsafe_allow_html=True)
-        with col4:
-            st.markdown(f"""
-                <div class='metric-card'>
-                    <div class='metric-title'>Sistem Durumu</div>
-                    <div class='metric-value-green'>AKTİF (v76)</div>
-                </div>
-            """, unsafe_allow_html=True)
-            
-        st.markdown("<br>", unsafe_allow_html=True)
-        
-        # Grafik ve Tablolar
-        tab1, tab2, tab3 = st.tabs(["📈 Sermaye Eğrisi (Equity)", "📊 Sınıf Bazlı Performans", "📋 Trade Defteri"])
-        
-        with tab1:
-            if not results['Equity'].empty:
-                chart_df = results['Equity'].set_index("Date")
-                st.line_chart(chart_df["NAV"], color="#2962ff")
-            else:
-                st.info("Gösterilecek equity verisi bulunamadı.")
-                
-        with tab2:
-            class_report_df = pd.DataFrame(results['By_Class']).T
-            st.dataframe(class_report_df.style.format({
-                "Win_Rate": "{:.2f}%",
-                "Profit_Factor": "{:.2f}",
-                "Avg_Return": "{:.2f}%"
-            }), use_container_width=True)
-            
-        with tab3:
-            if results['Trades']:
-                trades_df = pd.DataFrame(results['Trades'])
-                st.dataframe(trades_df, use_container_width=True)
-            else:
-                st.info("Bu periyotta gerçekleşen işlem bulunamadı.")
-else:
-    st.markdown("""
-        <div style='text-align: center; padding: 50px; color: #787b86;'>
-            <h3>Backtest simülasyonunu başlatmak için sol menüden 'Backtest Çalıştır' butonuna tıklayın.</h3>
-        </div>
-    """, unsafe_allow_html=True)
 
