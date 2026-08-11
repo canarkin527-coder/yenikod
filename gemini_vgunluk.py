@@ -18,7 +18,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Kurumsal Bloomberg / Terminal Tarzı Gelişmiş Dark Arayüz Tasarımı
+# Gelişmiş, Renkli ve Canlı Terminal Tasarımı (CSS)
 st.markdown("""
 <style>
     .main { background-color: #030712; color: #F8FAFC; }
@@ -26,15 +26,17 @@ st.markdown("""
     .terminal-card {
         background: linear-gradient(135deg, #0F172A 0%, #1E293B 100%);
         border: 1px solid #334155;
-        border-radius: 10px;
+        border-radius: 12px;
         padding: 20px;
         margin-bottom: 15px;
         box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
     }
     .metric-title { font-size: 0.85rem; font-weight: 700; color: #94A3B8; text-transform: uppercase; letter-spacing: 1.5px; }
     .metric-val { font-size: 1.8rem; font-weight: 900; color: #38BDF8; margin-top: 5px; }
-    .signal-badge { background-color: #064E3B; border: 1px solid #10B981; color: #34D399; padding: 4px 10px; border-radius: 6px; font-weight: 700; }
-    .warning-badge { background-color: #78350F; border: 1px solid #F59E0B; color: #FBBF24; padding: 4px 10px; border-radius: 6px; font-weight: 700; }
+    .signal-badge-green { background-color: #064E3B; border: 1px solid #10B981; color: #34D399; padding: 6px 12px; border-radius: 8px; font-weight: 800; text-align: center; display: inline-block; }
+    .signal-badge-blue { background-color: #1E3A8A; border: 1px solid #3B82F6; color: #60A5FA; padding: 6px 12px; border-radius: 8px; font-weight: 800; text-align: center; display: inline-block; }
+    .signal-badge-yellow { background-color: #78350F; border: 1px solid #F59E0B; color: #FBBF24; padding: 6px 12px; border-radius: 8px; font-weight: 800; text-align: center; display: inline-block; }
+    .live-ticker { color: #38BDF8; font-weight: bold; font-family: monospace; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -96,18 +98,6 @@ class InstitutionalDatabaseManager:
                 VALUES (?, ?, ?, ?)
             """, (current_time_str, 100000.0, 100000.0, 0))
             
-        connection.commit()
-        connection.close()
-
-    @staticmethod
-    def log_portfolio_state(cash, nav, count):
-        connection = sqlite3.connect(DB_FILE)
-        cursor = connection.cursor()
-        timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute("""
-            INSERT INTO portfolio_nav_history (timestamp, cash_balance, total_portfolio_nav, open_positions_count)
-            VALUES (?, ?, ?, ?)
-        """, (timestamp_str, cash, nav, count))
         connection.commit()
         connection.close()
 
@@ -239,14 +229,12 @@ class MasterIndicatorEngine:
         df['Vol_SMA_20'] = vol.rolling(20).mean()
         df['RVOL'] = vol / (df['Vol_SMA_20'] + 1e-10)
         
-        # Smart Money Concepts (SMC) & Yapılar
         df['BOS'] = (close > high.shift(1).rolling(50).max()).astype(int)
         df['CHOCH'] = (close < low.shift(1).rolling(50).min()).astype(int)
         df['OrderBlock_Bull'] = ((close.shift(1) < close.shift(2)) & (close > high.shift(1))).astype(int)
         df['FVG_Up'] = (low > high.shift(2)).astype(int)
         df['FVG_Down'] = (high < low.shift(2)).astype(int)
         
-        # Ekstra İstatistiksel İndikatörlerle 125+ Tamamlama
         for i_idx in range(1, 24):
             df[f'Stat_Factor_{i_idx}'] = close.rolling(i_idx + 5).std() / (close.rolling(i_idx + 5).mean() + 1e-10)
             
@@ -254,11 +242,11 @@ class MasterIndicatorEngine:
         return df
 
 # ==============================================================================
-# 3. 5 KATMANLI SKORLAMA & REJİM MOTORU (GÜÇLÜ v64 MİMARİSİ)
+# 3. 5 KATMANLI SKORLAMA & REJİM MOTORU
 # ==============================================================================
 class InstitutionalQuantEngine:
     @staticmethod
-    def evaluate_universe(data_dictionary, xu100_dataframe):
+    def evaluate_universe(data_dictionary, xu100_dataframe, live_quotes=None):
         analysis_results = []
         for symbol, df in data_dictionary.items():
             processed_df = MasterIndicatorEngine.calculate_all_indicators(df)
@@ -267,9 +255,14 @@ class InstitutionalQuantEngine:
                 
             latest = processed_df.iloc[-1]
             
+            # Canlı fiyat güncellemesi (Eğer canlı çekilebildiyse son fiyatı override et)
+            current_price = latest['Close']
+            if live_quotes and symbol in live_quotes and live_quotes[symbol] > 0:
+                current_price = live_quotes[symbol]
+            
             # Katman 1: Trend Gücü (0-25 Puan)
             layer1 = 0
-            if latest['Close'] > latest['EMA_20']: layer1 += 8
+            if current_price > latest['EMA_20']: layer1 += 8
             if latest['EMA_20'] > latest['EMA_50']: layer1 += 9
             if latest['EMA_50'] > latest['EMA_200']: layer1 += 8
             
@@ -281,7 +274,7 @@ class InstitutionalQuantEngine:
             # Katman 3: Relatif Güç - RS / XU100 (0-20 Puan)
             if xu100_dataframe is not None and not xu100_dataframe.empty:
                 aligned_xu = xu100_dataframe['Close'].reindex(processed_df.index).ffill()
-                stock_ret = (latest['Close'] / processed_df['Close'].iloc[-60]) - 1 if len(processed_df) >= 60 else 0
+                stock_ret = (current_price / processed_df['Close'].iloc[-60]) - 1 if len(processed_df) >= 60 else 0
                 market_ret = (aligned_xu.iloc[-1] / aligned_xu.iloc[-60]) - 1 if len(aligned_xu) >= 60 else 0
                 rs_val = stock_ret - market_ret
                 layer3 = float(np.clip((rs_val + 0.15) * 66.6, 0, 20))
@@ -300,17 +293,15 @@ class InstitutionalQuantEngine:
             
             total_score = float(np.clip(layer1 + layer2 + layer3 + layer4 + layer5, 0, 100))
             
-            # Dinamik TP1, TP2 ve Stop Loss Hesaplama
-            price = latest['Close']
             atr = latest['ATR']
-            tp1 = price + (1.5 * atr)
-            tp2 = price + (3.0 * atr)
-            stop_loss = price - (2.0 * atr)
+            tp1 = current_price + (1.5 * atr)
+            tp2 = current_price + (3.0 * atr)
+            stop_loss = current_price - (2.0 * atr)
             
             analysis_results.append({
                 'symbol': symbol,
                 'score': total_score,
-                'price': price,
+                'price': current_price,
                 'rsi': latest['RSI'],
                 'rvol': latest['RVOL'],
                 'atr': atr,
@@ -364,94 +355,101 @@ class BacktestSimulationEngine:
         return equity_curve, trades
 
 # ==============================================================================
-# 5. STREAMLIT PROFESSIONAL USER INTERFACE (DASHBOARD)
+# 5. STREAMLIT RENKLİ & CANLI KURUMSAL ARAYÜZ
 # ==============================================================================
 def main():
     InstitutionalDatabaseManager.initialize_database()
     
-    # Başlık ve Kurumsal Görünüm
-    st.markdown('<h1 style="color:#F8FAFC; font-weight:900;">⚡ QUANT MASTER v64 | INSTITUTIONAL TERMINAL</h1>', unsafe_allow_html=True)
-    st.markdown('<p style="color:#94A3B8;">128+ İndikatör, 5 Katmanlı Skorlama, SMC Yapıları & Otomatik 17:45 Seans Sonu Tarama Modülü</p>', unsafe_allow_html=True)
+    st.markdown('<h1 style="color:#38BDF8; font-weight:900;">⚡ QUANT MASTER v64 | LIVE INSTITUTIONAL TERMINAL</h1>', unsafe_allow_html=True)
+    st.markdown('<p style="color:#94A3B8;">Anlık Canlı Fiyat Senkronizasyonu, 128+ İndikatör, Renkli Skor Matrisi & Gelişmiş Risk Motoru</p>', unsafe_allow_html=True)
     st.markdown("---")
     
-    # Zaman ve Seans Kontrolü (17:45 - 17:55 Kriteri)
-    current_time_now = datetime.now().time()
-    scan_start_target = time(17, 45)
-    scan_end_target = time(17, 55)
-    is_scan_window = scan_start_target <= current_time_now <= scan_end_target
-    
     with st.sidebar:
-        st.header("⚙️ Terminal Kontrol Paneli")
-        
-        if is_scan_window:
-            st.markdown('<div class="warning-badge">⏰ 17:45 - 17:55 Seans Sonu Tarama Penceresi Aktif!</div>', unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="signal-badge">🟢 Sistem Hazır (Manuel Tarama Serbest)</div>', unsafe_allow_html=True)
-            
-        years_input = st.slider("Backtest Periyodu (Yıl)", 1, 5, 3)
-        run_scan = st.button("🚀 128 İndikatörlü Kurumsal Taramayı Başlat", use_container_width=True)
+        st.header("⚙️ Terminal Kontrol")
+        years_input = st.slider("Geçmiş Veri Periyodu (Yıl)", 1, 5, 3)
+        run_scan = st.button("🚀 Canlı Fiyatlar ile Taramayı Başlat", use_container_width=True)
         run_backtest = st.button("📈 5 Yıllık Backtest Simülasyonu", use_container_width=True)
         
         st.markdown("---")
-        st.subheader("💼 Portföy Yönetimi")
-        close_all_btn = st.button("🚨 Tüm Pozisyonları Kapat / Nakite Geç", use_container_width=True)
-        if close_all_btn:
+        st.subheader("💼 Portföy Kontrol")
+        if st.button("🚨 Tüm Pozisyonları Kapat", use_container_width=True):
             active_df = InstitutionalDatabaseManager.get_active_positions()
             for _, pos_row in active_df.iterrows():
                 InstitutionalDatabaseManager.execute_manual_close(pos_row['symbol'], pos_row['entry_price'])
             st.success("Tüm açık pozisyonlar kapatıldı ve nakde geçildi!")
             st.rerun()
 
-    # Tarama Motoru Tetikleyici
-    if run_scan or is_scan_window:
-        with st.spinner("BIST Evreni yükleniyor, 128 indikatör ve 5 katmanlı skorlama hesaplanıyor..."):
+    if run_scan:
+        with st.spinner("Canlı piyasa verileri çekiliyor ve 128 indikatör işleniyor..."):
             universe = ["KCHOL.IS", "THYAO.IS", "EREGL.IS", "TUPRS.IS", "GARAN.IS", "ASELS.IS", "BIMAS.IS", "SAHOL.IS", "SISE.IS", "PGSUS.IS", "XU100.IS"]
+            
+            # Canlı fiyatları yf.download ve yf.Ticker üzerinden anlık olarak çekme
             raw_data = yf.download(universe, period=f"{years_input}y", group_by='ticker', progress=False)
+            
+            live_quotes = {}
+            for sym in universe:
+                try:
+                    t_obj = yf.Ticker(sym)
+                    todays_data = t_obj.history(period="1d")
+                    if not todays_data.empty:
+                        live_quotes[sym] = float(todays_data['Close'].iloc[-1])
+                    else:
+                        live_quotes[sym] = 0.0
+                except:
+                    live_quotes[sym] = 0.0
             
             xu100_bench = raw_data["XU100.IS"] if "XU100.IS" in raw_data else None
             clean_dict = {s: raw_data[s].dropna() for s in universe if s != "XU100.IS" and s in raw_data}
             
-            signals = InstitutionalQuantEngine.evaluate_universe(clean_dict, xu100_bench)
+            signals = InstitutionalQuantEngine.evaluate_universe(clean_dict, xu100_bench, live_quotes)
             st.session_state['v64_signals'] = signals
-            st.success(f"Tarama Tamamlandı! İncelenen Varlık Sayısı: {len(signals)}")
+            st.success(f"Canlı Tarama Başarıyla Tamamlandı! Varlık Sayısı: {len(signals)}")
 
-    # Arayüz Grid Tasarımı
     col_main, col_side = st.columns([2.2, 1])
     
     with col_main:
-        st.subheader("🏆 Kurumsal Skor Sıralaması ve Sinyal Matrisi")
+        st.subheader("🏆 Renkli Kurumsal Skor & Sinyal Matrisi")
         if 'v64_signals' in st.session_state:
-            signal_rows = []
             for item in st.session_state['v64_signals']:
-                signal_rows.append({
-                    "Hisse": item['symbol'],
-                    "Kurumsal Skor": f"{item['score']:.1f} / 100",
-                    "Fiyat (TL)": f"{item['price']:.2f}",
-                    "TP1 (Hedef 1)": f"{item['tp1']:.2f}",
-                    "TP2 (Hedef 2)": f"{item['tp2']:.2f}",
-                    "Stop Loss": f"{item['stop_loss']:.2f}",
-                    "RSI": f"{item['rsi']:.1f}",
-                    "RVOL": f"{item['rvol']:.2f}x"
-                })
-            st.dataframe(pd.DataFrame(signal_rows), use_container_width=True)
-            
-            # Ertesi Gün Emir Planlama Modülü
-            st.markdown("### 📋 Ertesi Gün Emir Planı (17:45 - 17:55 Bazlı)")
+                score = item['score']
+                badge_class = "signal-badge-green" if score >= 75 else ("signal-badge-blue" if score >= 50 else "signal-badge-yellow")
+                
+                st.markdown(f"""
+                <div class="terminal-card">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <h3 style="margin: 0; color: #F8FAFC;">{item['symbol']}</h3>
+                            <span class="live-ticker">Canlı Fiyat: {item['price']:.2f} TL</span> | 
+                            <span style="color: #94A3B8;">RSI: {item['rsi']:.1f}</span> | 
+                            <span style="color: #94A3B8;">RVOL: {item['rvol']:.2f}x</span>
+                        </div>
+                        <div>
+                            <div class="{badge_class}">Skor: {score:.1f} / 100</div>
+                        </div>
+                    </div>
+                    <hr style="border-color: #334155; margin: 12px 0;">
+                    <div style="display: flex; justify-content: space-between; font-size: 0.9rem; color: #CBD5E1;">
+                        <div>🎯 <b>TP1 (Hedef 1):</b> <span style="color: #34D399;">{item['tp1']:.2f} TL</span></div>
+                        <div>🎯 <b>TP2 (Hedef 2):</b> <span style="color: #10B981;">{item['tp2']:.2f} TL</span></div>
+                        <div>🛑 <b>Stop Loss:</b> <span style="color: #EF4444;">{item['stop_loss']:.2f} TL</span></div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                
             top_pick = st.session_state['v64_signals'][0] if st.session_state['v64_signals'] else None
             if top_pick:
-                st.info(f"En yüksek skorlu aday: **{top_pick['symbol']}** (Skor: **{top_pick['score']:.1f}**). Ertesi seans açılışında Limit/Açılış emri verilebilir.")
-                if st.button(f"📥 {top_pick['symbol']} İçin Kağıt İşlem (Paper Trade) Emri Oluştur"):
-                    conn = sqlite3.connect(DB_FILE)
-                    cur = conn.cursor()
-                    cur.execute("""
-                        OR REPLACE INTO active_positions_ledger (symbol, entry_date, entry_price, shares_allocated, stop_loss_price, take_profit_1, take_profit_2, quant_score, regime_status)
+                if st.button(f"📥 {top_pick['symbol']} İçin Paper Trade Emri Oluştur", key="btn_paper_trade"):
+                    connection = sqlite3.connect(DB_FILE)
+                    cursor = connection.cursor()
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO active_positions_ledger (symbol, entry_date, entry_price, shares_allocated, stop_loss_price, take_profit_1, take_profit_2, quant_score, regime_status)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (top_pick['symbol'], datetime.now().strftime("%Y-%m-%d %H:%M:%S"), top_pick['price'], 500, top_pick['stop_loss'], top_pick['tp1'], top_pick['tp2'], top_pick['score'], "BULLISH"))
-                    conn.commit()
-                    conn.close()
-                    st.success(f"{top_pick['symbol']} başarıyla sanal portföye eklendi!")
+                    connection.commit()
+                    connection.close()
+                    st.success(f"{top_pick['symbol']} canlı fiyatıyla portföye eklendi!")
         else:
-            st.info("Sol menüden taramayı başlatın veya 17:45 seans sonu penceresini bekleyin.")
+            st.info("Canlı taramayı başlatmak için sol menüdeki butona tıklayın.")
 
     with col_side:
         st.subheader("💼 Aktif Portföy & Ledger")
@@ -463,17 +461,17 @@ def main():
                     <b>Sembol:</b> {pos['symbol']}<br>
                     <b>Giriş Fiyatı:</b> {pos['entry_price']:.2f} TL<br>
                     <b>Adet:</b> {pos['shares_allocated']}<br>
-                    <b>Stop Loss:</b> {pos['stop_loss_price']:.2f} TL<br>
-                    <b>TP1 / TP2:</b> {pos['take_profit_1']:.2f} / {pos['take_profit_2']:.2f} TL
+                    <b>Stop Loss:</b> <span style="color:#EF4444;">{pos['stop_loss_price']:.2f} TL</span><br>
+                    <b>Hedefler:</b> <span style="color:#34D399;">{pos['take_profit_1']:.2f} / {pos['take_profit_2']:.2f}</span>
                 </div>
                 """, unsafe_allow_html=True)
-                if st.button(f"Pozisyonu Kapat: {pos['symbol']}", key=f"close_{pos['symbol']}"):
+                if st.button(f"Kapat: {pos['symbol']}", key=f"close_{pos['symbol']}"):
                     InstitutionalDatabaseManager.execute_manual_close(pos['symbol'], pos['entry_price'])
                     st.rerun()
         else:
             st.markdown("<p style='color:#64748B;'>Aktif açık pozisyon bulunmuyor.</p>", unsafe_allow_html=True)
             
-        st.metric("Sanal Kasa Bakiye", "100,000.00 TL", "Kurumsal Mod")
+        st.metric("Sanal Kasa Bakiye", "100,000.00 TL", "Canlı Mod")
 
     if run_backtest:
         with st.spinner("KCHOL üzerinde 5 yıllık geriye dönük kurumsal backtest çalıştırılıyor..."):
@@ -494,4 +492,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
