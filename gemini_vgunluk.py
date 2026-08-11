@@ -66,11 +66,19 @@ class RegimeEngine:
     @staticmethod
     def get_regime_score(df, df_xu100):
         # Piyasa genişliği ve endeks trendine dayalı profesyonel skorlama
-        breadth = (df['Close'] > df['EMA_50']).mean() * 100
-        rs = (df['Close'] / df['Close'].shift(60)) / (df_xu100['Close'] / df_xu100['Close'].shift(60))
+        breadth_series = (df['Close'] > df['EMA_50'])
+        breadth = float(breadth_series.mean() * 100) if not breadth_series.empty else 0.0
+        
+        # Series to scalar conversion for safe math operations
+        stock_ret = float(df['Close'].iloc[-1] / (df['Close'].iloc[-60] + 1e-10)) if len(df) >= 60 else 1.0
+        xu_ret = float(df_xu100['Close'].iloc[-1] / (df_xu100['Close'].iloc[-60] + 1e-10)) if len(df_xu100) >= 60 else 1.0
+        rs = stock_ret / (xu_ret + 1e-10)
+        
         regime_factor = 20 if breadth > 50 else 0
-        final_score = (rs * 40) + regime_factor + (df['RSI'].iloc[-1] * 0.4)
-        return min(final_score, 100)
+        rsi_val = float(df['RSI'].iloc[-1]) if not pd.isna(df['RSI'].iloc[-1]) else 50.0
+        
+        final_score = float((rs * 40) + regime_factor + (rsi_val * 0.4))
+        return float(min(final_score, 100.0))
 
 # ------------------------------------------------------------------------------
 # 4. EXECUTION & SIMULATION ENGINE (BACKTEST & PAPER TRADING)
@@ -83,7 +91,7 @@ class ExecutionEngine:
             df = TechnicalEngine.calculate_indicators(df)
             score = RegimeEngine.get_regime_score(df, df_xu100)
             if score > 70: # Professional threshold
-                results.append({'symbol': sym, 'score': score, 'price': df['Close'].iloc[-1]})
+                results.append({'symbol': sym, 'score': score, 'price': float(df['Close'].iloc[-1])})
         return sorted(results, key=lambda x: x['score'], reverse=True)
 
 # ------------------------------------------------------------------------------
@@ -99,11 +107,19 @@ def main():
         if st.button("RUN GLOBAL SCAN"):
             # Profesyonel tarama döngüsü
             universe = ["KCHOL.IS", "THYAO.IS", "EREGL.IS", "TUPRS.IS", "GARAN.IS"] # Örnek evren
-            raw = yf.download(universe + ["XU100.IS"], period="2y", group_by='ticker')
+            raw = yf.download(universe + ["XU100.IS"], period="2y", group_by='ticker', progress=False)
             
             # Motorların çalıştırılması
-            signals = ExecutionEngine.process_signals({s: raw[s] for s in universe}, raw["XU100.IS"])
-            st.session_state['signals'] = signals
+            market_data_dict = {}
+            for s in universe:
+                if s in raw and not raw[s].empty:
+                    market_data_dict[s] = raw[s].dropna()
+            
+            xu100_data = raw["XU100.IS"] if "XU100.IS" in raw else None
+            
+            if market_data_dict and xu100_data is not None:
+                signals = ExecutionEngine.process_signals(market_data_dict, xu100_data)
+                st.session_state['signals'] = signals
             
     # Dashboard Grid
     col1, col2 = st.columns([2, 1])
