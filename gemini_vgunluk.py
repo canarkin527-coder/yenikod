@@ -1,20 +1,3 @@
-# ==============================================================================
-# QUANT MASTER v64.2
-# INSTITUTIONAL QUANT & PAPER TRADING TERMINAL
-# FULL FIXED VERSION
-# ==============================================================================
-#
-# FIXES:
-# 1. Yahoo Finance MultiIndex / KeyError fix
-# 2. Single ticker / multiple ticker normalization
-# 3. Streamlit HTML indentation/rendering fix
-# 4. Backtest yfinance normalization fix
-# 5. Paper trade cash accounting fix
-# 6. Live NAV calculation
-# 7. Dynamic ATR risk sizing
-#
-# ==============================================================================
-
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -26,9 +9,9 @@ import textwrap
 
 warnings.filterwarnings("ignore")
 
-
 # ==============================================================================
-# STREAMLIT CONFIGURATION
+# QUANT MASTER v64.2 - INSTITUTIONAL QUANT & PAPER TRADING TERMINAL
+# FIXED: HTML CODE DISPLAY + YFINANCE MULTIINDEX/COLUMN KeyError
 # ==============================================================================
 
 st.set_page_config(
@@ -38,39 +21,21 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-
 # ==============================================================================
-# INSTITUTIONAL THEME
+# CSS
 # ==============================================================================
-
-st.markdown("""
+st.markdown(textwrap.dedent("""
 <style>
-
-.main {
-    background-color: #030712;
-    color: #F8FAFC;
-}
-
-.stApp {
-    background-color: #030712;
-}
-
+.main { background-color: #030712; color: #F8FAFC; }
+.stApp { background-color: #030712; }
 .terminal-card {
-    background: linear-gradient(
-        135deg,
-        #0F172A 0%,
-        #1E293B 100%
-    );
-
+    background: linear-gradient(135deg, #0F172A 0%, #1E293B 100%);
     border: 1px solid #334155;
     border-radius: 12px;
     padding: 20px;
     margin-bottom: 15px;
-
-    box-shadow:
-        0 10px 15px -3px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
 }
-
 .metric-title {
     font-size: 0.85rem;
     font-weight: 700;
@@ -78,14 +43,12 @@ st.markdown("""
     text-transform: uppercase;
     letter-spacing: 1.5px;
 }
-
 .metric-val {
     font-size: 1.8rem;
     font-weight: 900;
     color: #38BDF8;
     margin-top: 5px;
 }
-
 .signal-badge-green {
     background-color: #064E3B;
     border: 1px solid #10B981;
@@ -95,7 +58,6 @@ st.markdown("""
     font-weight: 800;
     display: inline-block;
 }
-
 .signal-badge-blue {
     background-color: #1E3A8A;
     border: 1px solid #3B82F6;
@@ -105,7 +67,6 @@ st.markdown("""
     font-weight: 800;
     display: inline-block;
 }
-
 .signal-badge-yellow {
     background-color: #78350F;
     border: 1px solid #F59E0B;
@@ -115,231 +76,213 @@ st.markdown("""
     font-weight: 800;
     display: inline-block;
 }
-
 .live-ticker {
     color: #38BDF8;
     font-weight: bold;
     font-family: monospace;
 }
-
 </style>
-""", unsafe_allow_html=True)
-
-
-# ==============================================================================
-# DATABASE
-# ==============================================================================
+"""), unsafe_allow_html=True)
 
 DB_FILE = "quant_master_v64_pro.db"
 
+
+# ==============================================================================
+# 1. DATAFRAME / YFINANCE NORMALIZATION
+# ==============================================================================
+
+def normalize_yfinance_df(df):
+    """
+    yfinance bazı sürümlerde tek sembol için bile MultiIndex döndürebilir.
+    Bu fonksiyon OHLCV kolonlarını güvenli biçimde tek seviyeye indirir.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    out = df.copy()
+
+    if isinstance(out.columns, pd.MultiIndex):
+        # Önce OHLCV seviyesini bulmaya çalış
+        wanted = {"Open", "High", "Low", "Close", "Adj Close", "Volume"}
+
+        # Birinci seviyede OHLCV varsa onu seç
+        if any(col in wanted for col in out.columns.get_level_values(0)):
+            out.columns = out.columns.get_level_values(0)
+        # İkinci seviyede OHLCV varsa onu seç
+        elif out.columns.nlevels > 1 and any(
+            col in wanted for col in out.columns.get_level_values(-1)
+        ):
+            out.columns = out.columns.get_level_values(-1)
+        else:
+            # Son çare: ilk seviyeyi kullan
+            out.columns = out.columns.get_level_values(0)
+
+    # Aynı isimli kolonlar oluşmuşsa ilkini kullan
+    if out.columns.duplicated().any():
+        out = out.loc[:, ~out.columns.duplicated(keep="first")]
+
+    # Adj Close yoksa Close yeterlidir
+    required = ["Open", "High", "Low", "Close", "Volume"]
+    for col in required:
+        if col not in out.columns:
+            if col == "Open" and "Close" in out.columns:
+                out["Open"] = out["Close"]
+            elif col in ("High", "Low") and "Close" in out.columns:
+                out[col] = out["Close"]
+            elif col == "Volume":
+                out["Volume"] = 0.0
+            else:
+                return pd.DataFrame()
+
+    for col in required:
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+
+    out = out.dropna(subset=required).copy()
+    return out
+
+
+def download_single(symbol, period="3y"):
+    try:
+        raw = yf.download(
+            symbol,
+            period=period,
+            progress=False,
+            auto_adjust=False,
+            threads=False
+        )
+        return normalize_yfinance_df(raw)
+    except Exception:
+        return pd.DataFrame()
+
+
+def get_latest_price(symbol, fallback=None):
+    try:
+        data = yf.download(
+            symbol,
+            period="2d",
+            interval="1d",
+            progress=False,
+            auto_adjust=False,
+            threads=False
+        )
+        data = normalize_yfinance_df(data)
+        if not data.empty:
+            return float(data["Close"].iloc[-1])
+    except Exception:
+        pass
+    return float(fallback) if fallback is not None else 0.0
+
+
+def download_universe(symbols, period):
+    """
+    Evreni tek tek indirir.
+    Böylece yfinance MultiIndex yapısı ve tek sembol/çoklu sembol
+    kolon farklılıkları kaynaklı KeyError engellenir.
+    """
+    result = {}
+    for symbol in symbols:
+        df = download_single(symbol, period)
+        if not df.empty:
+            result[symbol] = df
+    return result
+
+
+# ==============================================================================
+# 2. DATABASE
+# ==============================================================================
 
 class InstitutionalDatabaseManager:
 
     @staticmethod
     def initialize_database():
-
         connection = sqlite3.connect(DB_FILE)
         cursor = connection.cursor()
 
-        # --------------------------------------------------------------
-        # NAV HISTORY
-        # --------------------------------------------------------------
-
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS portfolio_nav_history (
-
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-
                 timestamp TEXT NOT NULL,
-
                 cash_balance REAL NOT NULL,
-
                 total_portfolio_nav REAL NOT NULL,
-
                 open_positions_count INTEGER NOT NULL
             )
         """)
 
-        # --------------------------------------------------------------
-        # ACTIVE POSITIONS
-        # --------------------------------------------------------------
-
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS active_positions_ledger (
-
                 symbol TEXT PRIMARY KEY,
-
                 entry_date TEXT NOT NULL,
-
                 entry_price REAL NOT NULL,
-
                 shares_allocated INTEGER NOT NULL,
-
                 stop_loss_price REAL NOT NULL,
-
                 take_profit_1 REAL NOT NULL,
-
                 take_profit_2 REAL NOT NULL,
-
                 quant_score REAL NOT NULL,
-
                 regime_status TEXT NOT NULL
             )
         """)
 
-        # --------------------------------------------------------------
-        # HISTORICAL TRADES
-        # --------------------------------------------------------------
-
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS historical_trade_ledger (
-
                 trade_id INTEGER PRIMARY KEY AUTOINCREMENT,
-
                 symbol TEXT NOT NULL,
-
                 entry_date TEXT NOT NULL,
-
                 exit_date TEXT NOT NULL,
-
                 entry_price REAL NOT NULL,
-
                 exit_price REAL NOT NULL,
-
                 shares INTEGER NOT NULL,
-
                 realized_pnl REAL NOT NULL,
-
                 realized_pnl_pct REAL NOT NULL,
-
                 exit_reason TEXT NOT NULL
             )
         """)
 
-        # --------------------------------------------------------------
-        # INITIAL CAPITAL
-        # --------------------------------------------------------------
-
-        cursor.execute("""
-            SELECT COUNT(*)
-            FROM portfolio_nav_history
-        """)
-
-        count = cursor.fetchone()[0]
-
-        if count == 0:
-
-            current_time_str = datetime.now().strftime(
-                "%Y-%m-%d %H:%M:%S"
-            )
-
+        cursor.execute("SELECT COUNT(*) FROM portfolio_nav_history")
+        if cursor.fetchone()[0] == 0:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             cursor.execute("""
                 INSERT INTO portfolio_nav_history
-                (
-                    timestamp,
-                    cash_balance,
-                    total_portfolio_nav,
-                    open_positions_count
-                )
+                (timestamp, cash_balance, total_portfolio_nav, open_positions_count)
                 VALUES (?, ?, ?, ?)
-            """, (
-                current_time_str,
-                100000.0,
-                100000.0,
-                0
-            ))
+            """, (now, 100000.0, 100000.0, 0))
 
         connection.commit()
         connection.close()
 
-    # ------------------------------------------------------------------
-
     @staticmethod
     def get_active_positions():
-
         connection = sqlite3.connect(DB_FILE)
-
         df = pd.read_sql_query(
-            "SELECT * FROM active_positions_ledger",
-            connection
+            "SELECT * FROM active_positions_ledger", connection
         )
-
         connection.close()
-
         return df
-
-    # ------------------------------------------------------------------
 
     @staticmethod
     def get_latest_cash():
-
         connection = sqlite3.connect(DB_FILE)
-
         cursor = connection.cursor()
-
         cursor.execute("""
             SELECT cash_balance
             FROM portfolio_nav_history
-            ORDER BY id DESC
-            LIMIT 1
+            ORDER BY id DESC LIMIT 1
         """)
-
         row = cursor.fetchone()
-
         connection.close()
-
-        if row:
-            return float(row[0])
-
-        return 100000.0
-
-    # ------------------------------------------------------------------
+        return float(row[0]) if row else 100000.0
 
     @staticmethod
-    def get_total_nav():
-
+    def execute_manual_close(symbol, current_market_price):
         connection = sqlite3.connect(DB_FILE)
-
         cursor = connection.cursor()
 
-        cursor.execute("""
-            SELECT total_portfolio_nav
-            FROM portfolio_nav_history
-            ORDER BY id DESC
-            LIMIT 1
-        """)
-
-        row = cursor.fetchone()
-
-        connection.close()
-
-        if row:
-            return float(row[0])
-
-        return 100000.0
-
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def execute_manual_close(
-        symbol,
-        current_market_price
-    ):
-
-        connection = sqlite3.connect(DB_FILE)
-
-        cursor = connection.cursor()
-
-        cursor.execute("""
-            SELECT *
-            FROM active_positions_ledger
-            WHERE symbol = ?
-        """, (symbol,))
-
+        cursor.execute(
+            "SELECT * FROM active_positions_ledger WHERE symbol = ?",
+            (symbol,)
+        )
         row = cursor.fetchone()
 
         if row:
-
             (
                 _,
                 entry_date,
@@ -352,44 +295,19 @@ class InstitutionalDatabaseManager:
                 _
             ) = row
 
-            # ----------------------------------------------------------
-            # PNL
-            # ----------------------------------------------------------
-
-            pnl = (
-                current_market_price - entry_price
-            ) * shares
-
-            pnl_pct = (
-                (current_market_price / entry_price) - 1
-            ) * 100
-
-            exit_date_str = datetime.now().strftime(
-                "%Y-%m-%d %H:%M:%S"
-            )
-
-            # ----------------------------------------------------------
-            # TRADE LEDGER
-            # ----------------------------------------------------------
+            pnl = (current_market_price - entry_price) * shares
+            pnl_pct = ((current_market_price / entry_price) - 1) * 100
+            exit_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
             cursor.execute("""
                 INSERT INTO historical_trade_ledger
-                (
-                    symbol,
-                    entry_date,
-                    exit_date,
-                    entry_price,
-                    exit_price,
-                    shares,
-                    realized_pnl,
-                    realized_pnl_pct,
-                    exit_reason
-                )
+                (symbol, entry_date, exit_date, entry_price, exit_price,
+                 shares, realized_pnl, realized_pnl_pct, exit_reason)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 symbol,
                 entry_date,
-                exit_date_str,
+                exit_date,
                 entry_price,
                 current_market_price,
                 shares,
@@ -398,69 +316,29 @@ class InstitutionalDatabaseManager:
                 "MANUAL_CLOSE"
             ))
 
-            # ----------------------------------------------------------
-            # DELETE POSITION
-            # ----------------------------------------------------------
-
-            cursor.execute("""
-                DELETE FROM active_positions_ledger
-                WHERE symbol = ?
-            """, (symbol,))
-
-            # ----------------------------------------------------------
-            # CASH
-            # ----------------------------------------------------------
-
-            cursor.execute("""
-                SELECT cash_balance
-                FROM portfolio_nav_history
-                ORDER BY id DESC
-                LIMIT 1
-            """)
-
-            cash_row = cursor.fetchone()
-
-            last_cash = (
-                float(cash_row[0])
-                if cash_row
-                else 100000.0
+            cursor.execute(
+                "DELETE FROM active_positions_ledger WHERE symbol = ?",
+                (symbol,)
             )
 
-            # Estimated transaction cost
-            sale_value = (
-                shares *
-                current_market_price *
-                0.999475
+            # Satış sonrası nakit: komisyon dahil yaklaşık
+            last_cash = InstitutionalDatabaseManager.get_latest_cash()
+            new_cash = last_cash + (
+                shares * current_market_price * 0.999475
             )
 
-            new_cash = last_cash + sale_value
-
-            # ----------------------------------------------------------
-            # OPEN POSITION COUNT
-            # ----------------------------------------------------------
-
-            cursor.execute("""
-                SELECT COUNT(*)
-                FROM active_positions_ledger
-            """)
-
-            open_count = cursor.fetchone()[0]
-
-            # ----------------------------------------------------------
-            # NAV
-            # ----------------------------------------------------------
+            active_df = pd.read_sql_query(
+                "SELECT * FROM active_positions_ledger",
+                connection
+            )
+            open_count = len(active_df)
 
             cursor.execute("""
                 INSERT INTO portfolio_nav_history
-                (
-                    timestamp,
-                    cash_balance,
-                    total_portfolio_nav,
-                    open_positions_count
-                )
+                (timestamp, cash_balance, total_portfolio_nav, open_positions_count)
                 VALUES (?, ?, ?, ?)
             """, (
-                exit_date_str,
+                exit_date,
                 new_cash,
                 new_cash,
                 open_count
@@ -472,192 +350,7 @@ class InstitutionalDatabaseManager:
 
 
 # ==============================================================================
-# YFINANCE DATA NORMALIZATION
-# ==============================================================================
-
-REQUIRED_OHLCV = [
-    "Open",
-    "High",
-    "Low",
-    "Close",
-    "Volume"
-]
-
-
-def normalize_yfinance_dataframe(dataframe):
-
-    """
-    Yahoo Finance'ın hem eski hem yeni MultiIndex yapısını
-    standart OHLCV DataFrame'e dönüştürür.
-
-    Desteklenen örnekler:
-
-        Open High Low Close Volume
-
-    veya
-
-        ('KCHOL.IS', 'Open')
-        ('KCHOL.IS', 'High')
-
-    veya
-
-        ('Open', 'KCHOL.IS')
-        ('High', 'KCHOL.IS')
-    """
-
-    if dataframe is None:
-        return None
-
-    if not isinstance(dataframe, pd.DataFrame):
-        return None
-
-    if dataframe.empty:
-        return None
-
-    df = dataframe.copy()
-
-    # ==============================================================
-    # MULTIINDEX
-    # ==============================================================
-
-    if isinstance(df.columns, pd.MultiIndex):
-
-        extracted = {}
-
-        for required_col in REQUIRED_OHLCV:
-
-            found_series = None
-
-            for column_tuple in df.columns:
-
-                tuple_values = [
-                    str(x).strip()
-                    for x in column_tuple
-                ]
-
-                if required_col in tuple_values:
-
-                    try:
-
-                        candidate = df[column_tuple]
-
-                        if isinstance(candidate, pd.DataFrame):
-
-                            candidate = candidate.iloc[:, 0]
-
-                        found_series = candidate
-
-                        break
-
-                    except Exception:
-                        continue
-
-            if found_series is not None:
-
-                extracted[required_col] = found_series
-
-    # ==============================================================
-    # NORMAL COLUMNS
-    # ==============================================================
-
-    else:
-
-        extracted = {}
-
-        for required_col in REQUIRED_OHLCV:
-
-            if required_col in df.columns:
-
-                candidate = df[required_col]
-
-                if isinstance(candidate, pd.DataFrame):
-
-                    candidate = candidate.iloc[:, 0]
-
-                extracted[required_col] = candidate
-
-    # ==============================================================
-    # REQUIRED CHECK
-    # ==============================================================
-
-    missing = [
-        col
-        for col in REQUIRED_OHLCV
-        if col not in extracted
-    ]
-
-    if missing:
-        return None
-
-    # ==============================================================
-    # STANDARD DATAFRAME
-    # ==============================================================
-
-    result = pd.DataFrame(index=df.index)
-
-    for col in REQUIRED_OHLCV:
-
-        result[col] = pd.to_numeric(
-            extracted[col],
-            errors="coerce"
-        )
-
-    # ==============================================================
-    # CLEAN
-    # ==============================================================
-
-    result.replace(
-        [np.inf, -np.inf],
-        np.nan,
-        inplace=True
-    )
-
-    result.dropna(
-        subset=REQUIRED_OHLCV,
-        inplace=True
-    )
-
-    # Volume negatif olamaz
-    result = result[
-        result["Volume"] >= 0
-    ]
-
-    if result.empty:
-        return None
-
-    return result
-
-
-# ==============================================================================
-# YAHOO SINGLE TICKER HELPER
-# ==============================================================================
-
-def download_single_ticker(
-    symbol,
-    period="3y",
-    interval="1d"
-):
-
-    try:
-
-        data = yf.download(
-            symbol,
-            period=period,
-            interval=interval,
-            progress=False,
-            auto_adjust=False,
-            threads=False
-        )
-
-        return normalize_yfinance_dataframe(data)
-
-    except Exception:
-
-        return None
-
-
-# ==============================================================================
-# INDICATOR ENGINE
+# 3. INDICATOR ENGINE
 # ==============================================================================
 
 class MasterIndicatorEngine:
@@ -665,23 +358,12 @@ class MasterIndicatorEngine:
     @staticmethod
     def calculate_all_indicators(dataframe):
 
-        if dataframe is None:
+        if dataframe is None or dataframe.empty:
             return None
 
-        if dataframe.empty:
-            return None
+        df = normalize_yfinance_df(dataframe)
 
-        # ----------------------------------------------------------
-        # VERY IMPORTANT:
-        # Normalize BEFORE accessing Close/High/Low/Volume
-        # ----------------------------------------------------------
-
-        df = normalize_yfinance_dataframe(dataframe)
-
-        if df is None:
-            return None
-
-        if len(df) < 120:
+        if df.empty or len(df) < 120:
             return None
 
         close = df["Close"]
@@ -689,478 +371,206 @@ class MasterIndicatorEngine:
         low = df["Low"]
         vol = df["Volume"]
 
-        # ==========================================================
-        # MOVING AVERAGES
-        # ==========================================================
-
         for p in [
-            3,
-            5,
-            8,
-            9,
-            10,
-            13,
-            14,
-            15,
-            20,
-            21,
-            30,
-            34,
-            40,
-            50,
-            55,
-            60,
-            89,
-            100,
-            150,
-            200
+            3, 5, 8, 9, 10, 13, 14, 15, 20, 21,
+            30, 34, 40, 50, 55, 60, 89, 100, 150, 200
         ]:
-
-            df[f"SMA_{p}"] = (
-                close.rolling(p).mean()
-            )
-
-            df[f"EMA_{p}"] = (
-                close.ewm(
-                    span=p,
-                    adjust=False
-                ).mean()
-            )
-
-        # ==========================================================
-        # HMA 20
-        # ==========================================================
+            df[f"SMA_{p}"] = close.rolling(p).mean()
+            df[f"EMA_{p}"] = close.ewm(
+                span=p, adjust=False
+            ).mean()
 
         half_length = 10
         sqrt_length = int(np.sqrt(20))
 
-        weights_half = np.arange(
-            1,
-            half_length + 1
-        )
-
-        weights_full = np.arange(
-            1,
-            20 + 1
-        )
-
-        wma_half = close.rolling(
-            half_length
-        ).apply(
-            lambda x: np.dot(
-                x,
-                weights_half
-            ) / weights_half.sum(),
+        w = np.arange(1, half_length + 1)
+        wma_half = close.rolling(half_length).apply(
+            lambda x: np.dot(x, w) / np.sum(w),
             raw=True
         )
 
-        wma_full = close.rolling(
-            20
-        ).apply(
-            lambda x: np.dot(
-                x,
-                weights_full
-            ) / weights_full.sum(),
+        w = np.arange(1, 21)
+        wma_full = close.rolling(20).apply(
+            lambda x: np.dot(x, w) / np.sum(w),
             raw=True
         )
 
-        diff_wma = (
-            2 * wma_half - wma_full
-        )
+        diff_wma = 2 * wma_half - wma_full
 
-        hma_weights = np.arange(
-            1,
-            sqrt_length + 1
-        )
-
-        df["HMA_20"] = diff_wma.rolling(
-            sqrt_length
-        ).apply(
-            lambda x: np.dot(
-                x,
-                hma_weights
-            ) / hma_weights.sum(),
+        w = np.arange(1, sqrt_length + 1)
+        df["HMA_20"] = diff_wma.rolling(sqrt_length).apply(
+            lambda x: np.dot(x, w) / np.sum(w),
             raw=True
         )
-
-        # ==========================================================
-        # DEMA / TEMA
-        # ==========================================================
-
-        ema20 = df["EMA_20"]
-
-        ema20_second = ema20.ewm(
-            span=20,
-            adjust=False
-        ).mean()
 
         df["DEMA_20"] = (
-            2 * ema20 - ema20_second
+            2 * df["EMA_20"]
+            - df["EMA_20"].ewm(span=20, adjust=False).mean()
         )
 
-        df["TEMA_20"] = (
-            3 * (ema20 - df["DEMA_20"])
-            + df["DEMA_20"].ewm(
-                span=20,
-                adjust=False
-            ).mean()
-        )
-
-        # ==========================================================
-        # VWAP
-        # ==========================================================
-
-        typical_price = (
-            high + low + close
-        ) / 3
-
-        df["VWAP"] = (
-            (vol * typical_price).cumsum()
-            /
-            (vol.cumsum() + 1e-10)
-        )
-
-        # ==========================================================
-        # ATR
-        # ==========================================================
-
-        tr1 = high - low
-
-        tr2 = (
-            high - close.shift(1)
-        ).abs()
-
-        tr3 = (
-            low - close.shift(1)
-        ).abs()
-
-        df["True_Range"] = pd.concat(
-            [
-                tr1,
-                tr2,
-                tr3
-            ],
-            axis=1
-        ).max(axis=1)
-
-        df["ATR"] = df[
-            "True_Range"
-        ].ewm(
-            span=14,
-            adjust=False
+        ema20_2 = df["EMA_20"].ewm(
+            span=20, adjust=False
         ).mean()
 
-        df["NATR"] = (
-            df["ATR"] /
-            close
-        ) * 100
-
-        # ==========================================================
-        # SUPERTREND
-        # ==========================================================
-
-        hl2 = (
-            high + low
-        ) / 2
-
-        atr3 = (
-            df["ATR"] * 3
+        df["TEMA_20"] = (
+            3 * df["EMA_20"]
+            - 3 * ema20_2
+            + ema20_2.ewm(span=20, adjust=False).mean()
         )
 
-        upper_basic = (
-            hl2 + atr3
+        df["VWAP"] = (
+            (vol * (high + low + close) / 3).cumsum()
+            / (vol.cumsum() + 1e-10)
         )
 
-        lower_basic = (
-            hl2 - atr3
-        )
+        tr1 = high - low
+        tr2 = (high - close.shift(1)).abs()
+        tr3 = (low - close.shift(1)).abs()
 
-        supertrend_vals = [
-            0.0
-        ] * len(df)
+        df["True_Range"] = pd.concat(
+            [tr1, tr2, tr3], axis=1
+        ).max(axis=1)
 
-        st_direction = [
-            1
-        ] * len(df)
+        df["ATR"] = df["True_Range"].ewm(
+            span=14, adjust=False
+        ).mean()
 
-        for i in range(
-            1,
-            len(df)
-        ):
+        df["NATR"] = (df["ATR"] / close) * 100
 
+        # Supertrend
+        hl2 = (high + low) / 2
+        atr3 = df["ATR"] * 3
+        upper_basic = hl2 + atr3
+        lower_basic = hl2 - atr3
+
+        supertrend_vals = [0.0] * len(df)
+        st_direction = [1] * len(df)
+
+        for i in range(1, len(df)):
             curr_close = close.iloc[i]
-
             prev_close = close.iloc[i - 1]
 
             ub = upper_basic.iloc[i]
-
             lb = lower_basic.iloc[i]
 
-            prev_ub = upper_basic.iloc[
-                i - 1
-            ]
-
-            prev_lb = lower_basic.iloc[
-                i - 1
-            ]
+            prev_ub = upper_basic.iloc[i - 1]
+            prev_lb = lower_basic.iloc[i - 1]
 
             final_ub = (
                 ub
-                if (
-                    ub < prev_ub
-                    or prev_close > prev_ub
-                )
+                if (ub < prev_ub or prev_close > prev_ub)
                 else prev_ub
             )
 
             final_lb = (
                 lb
-                if (
-                    lb > prev_lb
-                    or prev_close < prev_lb
-                )
+                if (lb > prev_lb or prev_close < prev_lb)
                 else prev_lb
             )
 
-            curr_dir = st_direction[
-                i - 1
-            ]
+            curr_dir = st_direction[i - 1]
 
-            if (
-                curr_dir == 1
-                and curr_close < final_lb
-            ):
-
+            if curr_dir == 1 and curr_close < final_lb:
                 curr_dir = -1
-
-            elif (
-                curr_dir == -1
-                and curr_close > final_ub
-            ):
-
+            elif curr_dir == -1 and curr_close > final_ub:
                 curr_dir = 1
 
             st_direction[i] = curr_dir
-
             supertrend_vals[i] = (
-                final_lb
-                if curr_dir == 1
-                else final_ub
+                final_lb if curr_dir == 1 else final_ub
             )
 
-        df["Supertrend"] = (
-            supertrend_vals
-        )
+        df["Supertrend"] = supertrend_vals
 
-        # ==========================================================
         # RSI
-        # ==========================================================
-
         delta = close.diff()
 
         pos = (
-            delta.where(
-                delta > 0,
-                0
-            )
-            .ewm(
-                alpha=1 / 14,
-                adjust=False
-            )
+            delta.where(delta > 0, 0)
+            .ewm(alpha=1 / 14, adjust=False)
             .mean()
         )
 
         neg = (
-            -delta.where(
-                delta < 0,
-                0
-            )
-            .ewm(
-                alpha=1 / 14,
-                adjust=False
-            )
+            -delta.where(delta < 0, 0)
+            .ewm(alpha=1 / 14, adjust=False)
             .mean()
         )
 
-        df["RSI"] = (
-            100
-            -
-            (
-                100 /
-                (
-                    1
-                    +
-                    pos /
-                    (neg + 1e-10)
-                )
-            )
+        df["RSI"] = 100 - (
+            100 / (1 + pos / (neg + 1e-10))
         )
 
-        # ==========================================================
         # MACD
-        # ==========================================================
-
         ema_f = close.ewm(
-            span=12,
-            adjust=False
+            span=12, adjust=False
         ).mean()
 
         ema_s = close.ewm(
-            span=26,
-            adjust=False
+            span=26, adjust=False
         ).mean()
 
-        df["MACD"] = (
-            ema_f - ema_s
-        )
+        df["MACD"] = ema_f - ema_s
 
-        df["MACD_Signal"] = (
-            df["MACD"]
-            .ewm(
-                span=9,
-                adjust=False
-            )
-            .mean()
-        )
+        df["MACD_Signal"] = df["MACD"].ewm(
+            span=9, adjust=False
+        ).mean()
 
         df["MACD_Hist"] = (
-            df["MACD"]
-            -
-            df["MACD_Signal"]
+            df["MACD"] - df["MACD_Signal"]
         )
 
-        # ==========================================================
-        # OBV
-        # ==========================================================
-
+        # Volume indicators
         df["OBV"] = (
-            np.sign(
-                close.diff()
-            )
-            * vol
+            np.sign(close.diff()) * vol
         ).fillna(0).cumsum()
 
-        df["OBV_EMA"] = (
-            df["OBV"]
-            .ewm(
-                span=20,
-                adjust=False
-            )
-            .mean()
-        )
-
-        # ==========================================================
-        # RVOL
-        # ==========================================================
+        df["OBV_EMA"] = df["OBV"].ewm(
+            span=20, adjust=False
+        ).mean()
 
         df["RVOL"] = (
-            vol /
-            (
-                vol.rolling(20).mean()
-                + 1e-10
-            )
+            vol / (vol.rolling(20).mean() + 1e-10)
         )
 
-        # ==========================================================
-        # BOS / CHOCH
-        # ==========================================================
-
+        # Structure
         df["Rolling_High_50"] = (
-            high
-            .rolling(50)
-            .max()
-            .shift(1)
+            high.rolling(50).max().shift(1)
         )
 
         df["Rolling_Low_50"] = (
-            low
-            .rolling(50)
-            .min()
-            .shift(1)
+            low.rolling(50).min().shift(1)
         )
 
         df["BOS"] = (
-            (
-                close >
-                df["Rolling_High_50"]
-            )
-            &
-            (
-                close.shift(1)
-                <=
-                df["Rolling_High_50"]
-            )
+            (close > df["Rolling_High_50"])
+            & (close.shift(1) <= df["Rolling_High_50"])
         ).astype(int)
 
         df["CHOCH"] = (
-            (
-                close <
-                df["Rolling_Low_50"]
-            )
-            &
-            (
-                close.shift(1)
-                >=
-                df["Rolling_Low_50"]
-            )
+            (close < df["Rolling_Low_50"])
+            & (close.shift(1) >= df["Rolling_Low_50"])
         ).astype(int)
-
-        # ==========================================================
-        # FVG
-        # ==========================================================
 
         df["FVG_Up"] = (
-            (
-                low >
-                high.shift(2)
-            )
-            &
-            (
-                close.shift(1)
-                >
-                high.shift(2)
-            )
+            (low > high.shift(2))
+            & (close.shift(1) > high.shift(2))
         ).astype(int)
 
-        # ==========================================================
-        # STATISTICAL FEATURES
-        # ==========================================================
-
-        for i_idx in range(
-            1,
-            30
-        ):
-
+        for i_idx in range(1, 30):
             window = i_idx + 2
-
-            df[
-                f"Stat_Feature_{i_idx}"
-            ] = (
-                close.rolling(
-                    window
-                ).std()
-                /
-                (
-                    close.rolling(
-                        window
-                    ).mean()
-                    + 1e-10
-                )
+            df[f"Stat_Feature_{i_idx}"] = (
+                close.rolling(window).std()
+                / (close.rolling(window).mean() + 1e-10)
             )
 
-        # ==========================================================
-        # METRIC LABEL
-        # ==========================================================
-
-        df[
-            "Total_Active_Metrics"
-        ] = 128
+        df["Total_Active_Metrics"] = 128
 
         return df
 
 
 # ==============================================================================
-# QUANT ENGINE
+# 4. QUANT ENGINE
 # ==============================================================================
 
 class InstitutionalQuantEngine:
@@ -1171,215 +581,109 @@ class InstitutionalQuantEngine:
         xu100_dataframe,
         live_quotes=None
     ):
-
         analysis_results = []
 
-        # ----------------------------------------------------------
-        # Normalize benchmark
-        # ----------------------------------------------------------
+        xu_processed = normalize_yfinance_df(xu100_dataframe)
 
-        xu100_clean = normalize_yfinance_dataframe(
-            xu100_dataframe
-        )
-
-        for symbol, raw_df in data_dictionary.items():
+        for symbol, df in data_dictionary.items():
 
             processed_df = (
-                MasterIndicatorEngine
-                .calculate_all_indicators(
-                    raw_df
-                )
+                MasterIndicatorEngine.calculate_all_indicators(df)
             )
 
             if processed_df is None:
                 continue
 
-            if processed_df.empty:
-                continue
-
             latest = processed_df.iloc[-1]
 
-            current_price = float(
-                latest["Close"]
-            )
+            current_price = float(latest["Close"])
 
-            # ------------------------------------------------------
-            # LIVE PRICE
-            # ------------------------------------------------------
-
-            if (
-                live_quotes is not None
-                and symbol in live_quotes
-                and live_quotes[symbol] > 0
-            ):
-
-                current_price = float(
-                    live_quotes[symbol]
-                )
-
-            # ======================================================
-            # LAYER 1
-            # TREND
-            # ======================================================
+            if live_quotes and symbol in live_quotes:
+                if live_quotes[symbol] > 0:
+                    current_price = float(live_quotes[symbol])
 
             layer1 = 0
 
-            if (
-                current_price
-                >
-                latest["EMA_20"]
-            ):
+            if current_price > latest["EMA_20"]:
                 layer1 += 8
 
-            if (
-                latest["EMA_20"]
-                >
-                latest["EMA_50"]
-            ):
+            if latest["EMA_20"] > latest["EMA_50"]:
                 layer1 += 9
 
-            if (
-                latest["EMA_50"]
-                >
-                latest["EMA_200"]
-            ):
+            if latest["EMA_50"] > latest["EMA_200"]:
                 layer1 += 8
-
-            # ======================================================
-            # LAYER 2
-            # MOMENTUM
-            # ======================================================
 
             layer2 = 0
 
-            if (
-                50
-                <= latest["RSI"]
-                <= 75
-            ):
+            if 50 <= latest["RSI"] <= 75:
                 layer2 += 12
 
-            if (
-                latest["MACD_Hist"] > 0
-            ):
+            if latest["MACD_Hist"] > 0:
                 layer2 += 13
 
-            # ======================================================
-            # LAYER 3
-            # RELATIVE STRENGTH
-            # ======================================================
-
             if (
-                xu100_clean is not None
-                and not xu100_clean.empty
+                xu_processed is not None
+                and not xu_processed.empty
+                and len(processed_df) >= 60
+                and len(xu_processed) >= 60
             ):
-
                 aligned_xu = (
-                    xu100_clean["Close"]
-                    .reindex(
-                        processed_df.index
-                    )
+                    xu_processed["Close"]
+                    .reindex(processed_df.index)
                     .ffill()
                 )
 
-                if (
-                    len(processed_df) >= 60
-                    and len(aligned_xu) >= 60
-                ):
-
-                    stock_old_price = float(
-                        processed_df[
-                            "Close"
-                        ].iloc[-60]
+                if len(aligned_xu) >= 60:
+                    stock_base = float(
+                        processed_df["Close"].iloc[-60]
                     )
-
-                    market_old_price = float(
+                    market_base = float(
                         aligned_xu.iloc[-60]
                     )
 
-                    if (
-                        stock_old_price > 0
-                        and market_old_price > 0
-                    ):
-
+                    if stock_base > 0 and market_base > 0:
                         stock_ret = (
-                            current_price /
-                            stock_old_price
+                            current_price / stock_base
                         ) - 1
 
                         market_ret = (
-                            aligned_xu.iloc[-1] /
-                            market_old_price
+                            aligned_xu.iloc[-1] / market_base
                         ) - 1
 
-                        rs_val = (
-                            stock_ret -
-                            market_ret
-                        )
+                        rs_val = stock_ret - market_ret
 
                         layer3 = float(
                             np.clip(
-                                (
-                                    rs_val + 0.15
-                                ) * 66.6,
+                                (rs_val + 0.15) * 66.6,
                                 0,
                                 20
                             )
                         )
-
                     else:
-
                         layer3 = 10.0
-
                 else:
-
                     layer3 = 10.0
-
             else:
-
                 layer3 = 10.0
-
-            # ======================================================
-            # LAYER 4
-            # VOLUME / FLOW
-            # ======================================================
 
             layer4 = 0
 
-            if (
-                latest["RVOL"] > 1.2
-            ):
+            if latest["RVOL"] > 1.2:
                 layer4 += 8
 
-            if (
-                latest["OBV"]
-                >
-                latest["OBV_EMA"]
-            ):
+            if latest["OBV"] > latest["OBV_EMA"]:
                 layer4 += 7
-
-            # ======================================================
-            # LAYER 5
-            # STRUCTURE
-            # ======================================================
 
             layer5 = 0
 
             if (
                 latest["BOS"] == 1
-                or
-                latest["FVG_Up"] == 1
+                or latest["FVG_Up"] == 1
             ):
                 layer5 += 10
 
-            if (
-                latest["CHOCH"] == 0
-            ):
+            if latest["CHOCH"] == 0:
                 layer5 += 5
-
-            # ======================================================
-            # TOTAL
-            # ======================================================
 
             total_score = float(
                 np.clip(
@@ -1393,80 +697,24 @@ class InstitutionalQuantEngine:
                 )
             )
 
-            # ======================================================
-            # ATR
-            # ======================================================
+            atr = float(latest["ATR"])
 
-            atr = float(
-                latest["ATR"]
-            )
-
-            if not np.isfinite(atr) or atr <= 0:
-
-                continue
-
-            # ======================================================
-            # TARGETS
-            # ======================================================
-
-            tp1 = (
-                current_price
-                +
-                (1.5 * atr)
-            )
-
-            tp2 = (
-                current_price
-                +
-                (3.0 * atr)
-            )
-
-            stop_loss = (
-                current_price
-                -
-                (2.0 * atr)
-            )
+            tp1 = current_price + 1.5 * atr
+            tp2 = current_price + 3.0 * atr
+            stop_loss = current_price - 2.0 * atr
 
             analysis_results.append({
-
                 "symbol": symbol,
-
                 "score": total_score,
-
                 "price": current_price,
-
-                "rsi": float(
-                    latest["RSI"]
-                ),
-
-                "rvol": float(
-                    latest["RVOL"]
-                ),
-
+                "rsi": float(latest["RSI"]),
+                "rvol": float(latest["RVOL"]),
                 "atr": atr,
-
                 "tp1": tp1,
-
                 "tp2": tp2,
-
                 "stop_loss": stop_loss,
-
-                "layer1": layer1,
-
-                "layer2": layer2,
-
-                "layer3": layer3,
-
-                "layer4": layer4,
-
-                "layer5": layer5,
-
                 "df": processed_df
             })
-
-        # ==========================================================
-        # SORT
-        # ==========================================================
 
         analysis_results.sort(
             key=lambda x: x["score"],
@@ -1477,7 +725,7 @@ class InstitutionalQuantEngine:
 
 
 # ==============================================================================
-# BACKTEST ENGINE
+# 5. BACKTEST ENGINE
 # ==============================================================================
 
 class BacktestSimulationEngine:
@@ -1489,159 +737,67 @@ class BacktestSimulationEngine:
         user_risk_pct=2.0
     ):
 
-        # ----------------------------------------------------------
-        # Normalize FIRST
-        # ----------------------------------------------------------
-
-        clean_df = normalize_yfinance_dataframe(
-            dataframe
-        )
-
-        if clean_df is None:
-            return [], [], {}
+        dataframe = normalize_yfinance_df(dataframe)
 
         processed_df = (
-            MasterIndicatorEngine
-            .calculate_all_indicators(
-                clean_df
+            MasterIndicatorEngine.calculate_all_indicators(
+                dataframe
             )
         )
 
         if processed_df is None:
             return [], [], {}
 
-        if len(processed_df) < 120:
-            return [], [], {}
-
-        # ==========================================================
-        # INITIAL STATE
-        # ==========================================================
-
-        cash = float(
-            starting_capital
-        )
-
+        cash = float(starting_capital)
         shares = 0
-
         equity_curve = []
-
         trade_results = []
-
         entry_basis = 0.0
 
-        # ==========================================================
-        # LOOP
-        # ==========================================================
+        start_index = 120
 
-        for i in range(
-            120,
-            len(processed_df)
-        ):
+        for i in range(start_index, len(processed_df)):
 
             row = processed_df.iloc[i]
 
-            price = float(
-                row["Close"]
-            )
-
-            atr = float(
-                row["ATR"]
-            )
-
-            if not np.isfinite(
-                atr
-            ) or atr <= 0:
-
-                continue
-
-            # ======================================================
-            # BUY
-            # ======================================================
+            price = float(row["Close"])
+            atr = float(row["ATR"])
 
             buy_cond = (
-                row["Close"]
-                >
-                row["EMA_20"]
-            ) and (
-                row["RSI"] > 50
-            ) and (
-                row["RVOL"] > 1.1
-            ) and (
-                row["MACD_Hist"] > 0
+                price > row["EMA_20"]
+                and row["RSI"] > 50
+                and row["RVOL"] > 1.1
+                and row["MACD_Hist"] > 0
             )
 
-            # ======================================================
-            # SELL
-            # ======================================================
-
-            if shares > 0:
-
-                sell_cond = (
-                    row["Close"]
-                    <
-                    row["EMA_20"]
-                ) or (
-                    row["RSI"] < 42
-                ) or (
-                    row["Close"]
-                    <
-                    entry_basis
-                    -
-                    (2.0 * atr)
+            sell_cond = (
+                price < row["EMA_20"]
+                or row["RSI"] < 42
+                or (
+                    shares > 0
+                    and price < entry_basis - 2.0 * atr
                 )
+            )
 
-            else:
-
-                sell_cond = False
-
-            # ======================================================
-            # ENTRY
-            # ======================================================
-
-            if (
-                shares == 0
-                and buy_cond
-            ):
+            if shares == 0 and buy_cond:
 
                 risk_budget = (
-                    cash *
-                    (
-                        user_risk_pct /
-                        100.0
-                    )
+                    cash * (user_risk_pct / 100.0)
                 )
 
-                risk_per_share = (
-                    2.0 * atr
-                )
+                risk_per_share = 2.0 * atr
 
                 if risk_per_share > 0:
-
                     shares = int(
-                        risk_budget /
-                        risk_per_share
+                        risk_budget / risk_per_share
                     )
-
                 else:
-
                     shares = int(
-                        (
-                            cash * 0.20
-                        )
-                        /
-                        price
+                        (cash * 0.20) / price
                     )
-
-                # --------------------------------------------------
-                # Maximum capital usage
-                # --------------------------------------------------
 
                 max_afford = int(
-                    (
-                        cash * 0.98
-                    )
-                    /
-                    price
+                    (cash * 0.98) / price
                 )
 
                 shares = min(
@@ -1650,142 +806,79 @@ class BacktestSimulationEngine:
                 )
 
                 if shares > 0:
-
-                    total_entry_cost = (
+                    cash -= (
                         shares
-                        *
-                        price
-                        *
-                        1.000525
+                        * price
+                        * 1.000525
                     )
+                    entry_basis = price
 
-                    if (
-                        total_entry_cost
-                        <= cash
-                    ):
-
-                        cash -= (
-                            total_entry_cost
-                        )
-
-                        entry_basis = price
-
-                    else:
-
-                        shares = 0
-
-            # ======================================================
-            # EXIT
-            # ======================================================
-
-            elif (
-                shares > 0
-                and sell_cond
-            ):
+            elif shares > 0 and sell_cond:
 
                 exit_val = (
                     shares
-                    *
-                    price
-                    *
-                    0.999475
+                    * price
+                    * 0.999475
                 )
 
                 pnl = (
                     exit_val
-                    -
-                    (
+                    - (
                         shares
-                        *
-                        entry_basis
-                        *
-                        1.000525
+                        * entry_basis
+                        * 1.000525
                     )
                 )
 
                 cash += exit_val
 
                 trade_results.append(
-                    pnl
+                    float(pnl)
                 )
 
                 shares = 0
-
                 entry_basis = 0.0
-
-            # ======================================================
-            # NAV
-            # ======================================================
 
             nav = (
                 cash
-                +
-                (
-                    shares
-                    *
-                    price
+                + (
+                    shares * price
                     if shares > 0
                     else 0
                 )
             )
 
-            equity_curve.append(
-                nav
-            )
+            equity_curve.append(float(nav))
 
-        # ==========================================================
-        # FINAL FORCE CLOSE
-        # ==========================================================
-
-        if (
-            shares > 0
-            and len(processed_df) > 0
-        ):
-
+        # Açık pozisyonu backtest sonunda realize et
+        if shares > 0:
             final_price = float(
-                processed_df[
-                    "Close"
-                ].iloc[-1]
+                processed_df["Close"].iloc[-1]
             )
 
             exit_val = (
                 shares
-                *
-                final_price
-                *
-                0.999475
+                * final_price
+                * 0.999475
             )
 
             pnl = (
                 exit_val
-                -
-                (
+                - (
                     shares
-                    *
-                    entry_basis
-                    *
-                    1.000525
+                    * entry_basis
+                    * 1.000525
                 )
             )
 
             cash += exit_val
-
-            trade_results.append(
-                pnl
-            )
-
-            shares = 0
+            trade_results.append(float(pnl))
 
             if equity_curve:
-                equity_curve[-1] = cash
-
-        # ==========================================================
-        # METRICS
-        # ==========================================================
+                equity_curve[-1] = float(cash)
 
         if not equity_curve:
-
-            return [], [], {}
+            return [], trade_results, {}
 
         eq_series = pd.Series(
             equity_curve,
@@ -1795,115 +888,69 @@ class BacktestSimulationEngine:
         returns = (
             eq_series
             .pct_change()
-            .replace(
-                [np.inf, -np.inf],
-                np.nan
-            )
+            .replace([np.inf, -np.inf], np.nan)
             .dropna()
         )
 
-        if (
-            len(returns) > 1
-            and returns.std() > 0
-        ):
-
+        if len(returns) > 1 and returns.std() > 0:
             sharpe_ratio = float(
                 (
                     returns.mean()
-                    /
-                    returns.std()
+                    / returns.std()
                 )
-                *
-                np.sqrt(252)
+                * np.sqrt(252)
             )
-
         else:
-
             sharpe_ratio = 0.0
 
-        # ==========================================================
-        # MAX DRAWDOWN
-        # ==========================================================
-
-        rolling_max = (
-            eq_series.cummax()
-        )
+        rolling_max = eq_series.cummax()
 
         drawdown = (
-            (
-                eq_series
-                -
-                rolling_max
-            )
-            /
-            rolling_max
+            (eq_series - rolling_max)
+            / rolling_max
         )
 
         max_drawdown = float(
             drawdown.min() * 100
         )
 
-        # ==========================================================
-        # WIN RATE
-        # ==========================================================
-
-        if len(trade_results) > 0:
+        if trade_results:
 
             wins = [
-                p
-                for p in trade_results
+                p for p in trade_results
                 if p > 0
             ]
 
             losses = [
-                p
-                for p in trade_results
+                p for p in trade_results
                 if p <= 0
             ]
 
             win_rate = (
                 len(wins)
-                /
-                len(trade_results)
-            ) * 100.0
+                / len(trade_results)
+                * 100.0
+            )
 
-            total_gains = sum(
-                wins
-            ) if wins else 0.0
-
-            total_losses = abs(
-                sum(losses)
-            ) if losses else 0.0
+            total_gains = sum(wins)
+            total_losses = abs(sum(losses))
 
             if total_losses > 0:
-
                 profit_factor = (
                     total_gains
-                    /
-                    total_losses
+                    / total_losses
                 )
-
             else:
-
-                profit_factor = (
-                    float("inf")
-                    if total_gains > 0
-                    else 0.0
-                )
+                profit_factor = float("inf")
 
         else:
-
             win_rate = 0.0
             profit_factor = 0.0
 
         metrics = {
-
             "sharpe": sharpe_ratio,
-
             "mdd": max_drawdown,
-
             "win_rate": win_rate,
-
             "profit_factor": profit_factor
         }
 
@@ -1915,135 +962,140 @@ class BacktestSimulationEngine:
 
 
 # ==============================================================================
-# LIVE PRICE
+# 6. SIGNAL CARD
 # ==============================================================================
 
-def get_live_price(symbol):
+def render_signal_card(item):
 
-    try:
+    score = item["score"]
 
-        data = yf.download(
-            symbol,
-            period="1d",
-            interval="1m",
-            progress=False,
-            auto_adjust=False,
-            threads=False
+    if score >= 75:
+        badge_class = "signal-badge-green"
+    elif score >= 50:
+        badge_class = "signal-badge-blue"
+    else:
+        badge_class = "signal-badge-yellow"
+
+    # ÖNEMLİ:
+    # st.markdown içinde 4+ boşlukla başlayan HTML,
+    # Markdown tarafından CODE BLOCK olarak algılanabiliyordu.
+    # st.html kullanıldığı için HTML artık yazı olarak görünmez.
+
+    html = f"""
+    <div class="terminal-card">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div>
+                <h3 style="margin:0; color:#F8FAFC;">
+                    {item["symbol"]}
+                </h3>
+
+                <span class="live-ticker">
+                    Canlı Fiyat: {item["price"]:.2f} TL
+                </span>
+
+                <span style="color:#64748B;"> | </span>
+
+                <span style="color:#94A3B8;">
+                    RSI: {item["rsi"]:.1f}
+                </span>
+
+                <span style="color:#64748B;"> | </span>
+
+                <span style="color:#94A3B8;">
+                    RVOL: {item["rvol"]:.2f}x
+                </span>
+            </div>
+
+            <div>
+                <div class="{badge_class}">
+                    Skor: {score:.1f} / 100
+                </div>
+            </div>
+        </div>
+
+        <hr style="border-color:#334155; margin:12px 0;">
+
+        <div style="
+            display:flex;
+            justify-content:space-between;
+            font-size:0.9rem;
+            color:#CBD5E1;
+        ">
+            <div>
+                🎯 <b>TP1:</b>
+                <span style="color:#34D399;">
+                    {item["tp1"]:.2f} TL
+                </span>
+            </div>
+
+            <div>
+                🎯 <b>TP2:</b>
+                <span style="color:#10B981;">
+                    {item["tp2"]:.2f} TL
+                </span>
+            </div>
+
+            <div>
+                🛑 <b>Stop Loss:</b>
+                <span style="color:#EF4444;">
+                    {item["stop_loss"]:.2f} TL
+                </span>
+            </div>
+        </div>
+    </div>
+    """
+
+    # Streamlit sürümünde st.html yoksa markdown fallback
+    if hasattr(st, "html"):
+        st.html(html)
+    else:
+        st.markdown(
+            textwrap.dedent(html),
+            unsafe_allow_html=True
         )
-
-        clean = normalize_yfinance_dataframe(
-            data
-        )
-
-        if (
-            clean is not None
-            and not clean.empty
-        ):
-
-            return float(
-                clean["Close"].iloc[-1]
-            )
-
-    except Exception:
-        pass
-
-    # --------------------------------------------------------------
-    # FALLBACK
-    # --------------------------------------------------------------
-
-    try:
-
-        ticker = yf.Ticker(
-            symbol
-        )
-
-        history = ticker.history(
-            period="1d"
-        )
-
-        clean = normalize_yfinance_dataframe(
-            history
-        )
-
-        if (
-            clean is not None
-            and not clean.empty
-        ):
-
-            return float(
-                clean["Close"].iloc[-1]
-            )
-
-    except Exception:
-        pass
-
-    return 0.0
 
 
 # ==============================================================================
-# MAIN
+# 7. MAIN
 # ==============================================================================
 
 def main():
 
     InstitutionalDatabaseManager.initialize_database()
 
-    # ==================================================================
-    # HEADER
-    # ==================================================================
-
     st.markdown(
-        """
-        <h1 style="
-            color:#38BDF8;
-            font-weight:900;
-        ">
-            ⚡ QUANT MASTER v64.2 |
-            INSTITUTIONAL PRO TERMINAL
-        </h1>
-        """,
+        '<h1 style="color:#38BDF8; font-weight:900;">'
+        '⚡ QUANT MASTER v64.2 | INSTITUTIONAL PRO TERMINAL'
+        '</h1>',
         unsafe_allow_html=True
     )
 
     st.markdown(
-        """
-        <p style="
-            color:#94A3B8;
-        ">
-            Düzeltilmiş Kapanış PnL,
-            Canlı Piyasa Fiyatlı NAV,
-            Gerçek Backtest Metrikleri
-            & Dinamik Risk
-        </p>
-        """,
+        '<p style="color:#94A3B8;">'
+        'Düzeltilmiş Kapanış PnL, Canlı Piyasa Fiyatlı NAV, '
+        'Gerçek Backtest Metrikleri & Dinamik Risk'
+        '</p>',
         unsafe_allow_html=True
     )
 
     st.markdown("---")
 
-    # ==================================================================
+    # --------------------------------------------------------------------------
     # SIDEBAR
-    # ==================================================================
+    # --------------------------------------------------------------------------
 
     with st.sidebar:
 
-        st.header(
-            "⚙️ Terminal Kontrol"
-        )
+        st.header("⚙️ Terminal Kontrol")
 
         years_input = st.slider(
             "Geçmiş Veri Periyodu (Yıl)",
-            1,
-            5,
-            3
+            1, 5, 3
         )
 
         risk_pct = st.slider(
             "İşlem Başına Risk Limiti (%)",
-            1.0,
-            5.0,
-            2.0,
-            step=0.5
+            1.0, 5.0, 2.0
         )
 
         run_scan = st.button(
@@ -2058,9 +1110,7 @@ def main():
 
         st.markdown("---")
 
-        st.subheader(
-            "💼 Portföy Yönetimi"
-        )
+        st.subheader("💼 Portföy Yönetimi")
 
         if st.button(
             "🚨 Tüm Pozisyonları Kapat",
@@ -2074,17 +1124,10 @@ def main():
 
             for _, pos_row in active_df.iterrows():
 
-                live_p = get_live_price(
-                    pos_row["symbol"]
+                live_p = get_latest_price(
+                    pos_row["symbol"],
+                    pos_row["entry_price"]
                 )
-
-                if live_p <= 0:
-
-                    live_p = float(
-                        pos_row[
-                            "entry_price"
-                        ]
-                    )
 
                 InstitutionalDatabaseManager.execute_manual_close(
                     pos_row["symbol"],
@@ -2097,9 +1140,9 @@ def main():
 
             st.rerun()
 
-    # ==================================================================
+    # --------------------------------------------------------------------------
     # SCAN
-    # ==================================================================
+    # --------------------------------------------------------------------------
 
     if run_scan:
 
@@ -2108,7 +1151,6 @@ def main():
         ):
 
             universe = [
-
                 "KCHOL.IS",
                 "THYAO.IS",
                 "EREGL.IS",
@@ -2122,174 +1164,36 @@ def main():
                 "XU100.IS"
             ]
 
-            # ----------------------------------------------------------
-            # DOWNLOAD
-            # ----------------------------------------------------------
-
-            try:
-
-                raw_data = yf.download(
-                    universe,
-                    period=f"{years_input}y",
-                    group_by="ticker",
-                    progress=False,
-                    auto_adjust=False,
-                    threads=False
-                )
-
-            except Exception as e:
-
-                st.error(
-                    f"Yahoo Finance veri hatası: {e}"
-                )
-
-                raw_data = None
-
-            # ----------------------------------------------------------
-            # EXTRACT EACH SYMBOL
-            # ----------------------------------------------------------
-
-            clean_dict = {}
-
-            if raw_data is not None:
-
-                for symbol in universe:
-
-                    if symbol == "XU100.IS":
-                        continue
-
-                    try:
-
-                        # ------------------------------------------------
-                        # MultiIndex'ten sembolü çıkar
-                        # ------------------------------------------------
-
-                        if isinstance(
-                            raw_data.columns,
-                            pd.MultiIndex
-                        ):
-
-                            symbol_data = None
-
-                            # First level ticker
-                            if symbol in raw_data.columns.get_level_values(0):
-
-                                symbol_data = raw_data[
-                                    symbol
-                                ]
-
-                            # Second level ticker
-                            elif symbol in raw_data.columns.get_level_values(1):
-
-                                symbol_data = raw_data[
-                                    :, symbol
-                                ]
-
-                            if symbol_data is not None:
-
-                                clean = normalize_yfinance_dataframe(
-                                    symbol_data
-                                )
-
-                            else:
-
-                                clean = None
-
-                        else:
-
-                            clean = normalize_yfinance_dataframe(
-                                raw_data
-                            )
-
-                        if clean is not None:
-
-                            clean_dict[
-                                symbol
-                            ] = clean
-
-                    except Exception:
-
-                        continue
-
-            # ----------------------------------------------------------
-            # XU100
-            # ----------------------------------------------------------
-
-            xu100_bench = None
-
-            try:
-
-                if raw_data is not None:
-
-                    if isinstance(
-                        raw_data.columns,
-                        pd.MultiIndex
-                    ):
-
-                        if (
-                            "XU100.IS"
-                            in
-                            raw_data.columns.get_level_values(0)
-                        ):
-
-                            xu100_raw = raw_data[
-                                "XU100.IS"
-                            ]
-
-                            xu100_bench = (
-                                normalize_yfinance_dataframe(
-                                    xu100_raw
-                                )
-                            )
-
-                        elif (
-                            "XU100.IS"
-                            in
-                            raw_data.columns.get_level_values(1)
-                        ):
-
-                            xu100_raw = raw_data[
-                                :,
-                                "XU100.IS"
-                            ]
-
-                            xu100_bench = (
-                                normalize_yfinance_dataframe(
-                                    xu100_raw
-                                )
-                            )
-
-                    else:
-
-                        xu100_bench = (
-                            normalize_yfinance_dataframe(
-                                raw_data
-                            )
-                        )
-
-            except Exception:
-
-                xu100_bench = None
-
-            # ----------------------------------------------------------
-            # LIVE QUOTES
-            # ----------------------------------------------------------
+            all_data = download_universe(
+                universe,
+                f"{years_input}y"
+            )
 
             live_quotes = {}
 
             for sym in universe:
-
-                live_p = get_live_price(
-                    sym
+                fallback = (
+                    all_data[sym]["Close"].iloc[-1]
+                    if sym in all_data
+                    and not all_data[sym].empty
+                    else 0.0
                 )
 
-                live_quotes[sym] = (
-                    live_p
+                live_quotes[sym] = get_latest_price(
+                    sym,
+                    fallback
                 )
 
-            # ----------------------------------------------------------
-            # ANALYSIS
-            # ----------------------------------------------------------
+            xu100_bench = all_data.get(
+                "XU100.IS",
+                pd.DataFrame()
+            )
+
+            clean_dict = {
+                s: df
+                for s, df in all_data.items()
+                if s != "XU100.IS"
+            }
 
             signals = (
                 InstitutionalQuantEngine
@@ -2300,26 +1204,23 @@ def main():
                 )
             )
 
-            st.session_state[
-                "v64_signals"
-            ] = signals
+            st.session_state["v64_signals"] = signals
 
             st.success(
-                f"Tarama Tamamlandı! "
-                f"Toplam Aday: {len(signals)}"
+                f"Tarama Tamamlandı! Toplam Aday: {len(signals)}"
             )
 
-    # ==================================================================
+    # --------------------------------------------------------------------------
     # MAIN COLUMNS
-    # ==================================================================
+    # --------------------------------------------------------------------------
 
     col_main, col_side = st.columns(
         [2.2, 1]
     )
 
-    # ==================================================================
-    # SIGNAL MATRIX
-    # ==================================================================
+    # --------------------------------------------------------------------------
+    # SIGNALS
+    # --------------------------------------------------------------------------
 
     with col_main:
 
@@ -2327,181 +1228,19 @@ def main():
             "🏆 Kurumsal Skor & Sinyal Matrisi"
         )
 
-        if (
-            "v64_signals"
-            in
-            st.session_state
-        ):
+        if "v64_signals" in st.session_state:
 
-            signals = (
-                st.session_state[
-                    "v64_signals"
-                ]
-            )
+            signals = st.session_state[
+                "v64_signals"
+            ]
 
             if not signals:
-
-                st.warning(
-                    "Geçerli teknik veriye sahip aday bulunamadı."
+                st.info(
+                    "Yeterli geçmiş verisi olan aday bulunamadı."
                 )
 
             for item in signals:
-
-                score = float(
-                    item["score"]
-                )
-
-                # ------------------------------------------------------
-                # BADGE
-                # ------------------------------------------------------
-
-                if score >= 75:
-
-                    badge_class = (
-                        "signal-badge-green"
-                    )
-
-                elif score >= 50:
-
-                    badge_class = (
-                        "signal-badge-blue"
-                    )
-
-                else:
-
-                    badge_class = (
-                        "signal-badge-yellow"
-                    )
-
-                # ======================================================
-                # IMPORTANT:
-                # textwrap.dedent prevents Streamlit
-                # from interpreting HTML as code.
-                # ======================================================
-
-                card_html = f"""
-<div class="terminal-card">
-
-    <div style="
-        display:flex;
-        justify-content:space-between;
-        align-items:center;
-    ">
-
-        <div>
-
-            <h3 style="
-                margin:0;
-                color:#F8FAFC;
-            ">
-                {item['symbol']}
-            </h3>
-
-            <span class="live-ticker">
-                Canlı Fiyat:
-                {item['price']:.2f} TL
-            </span>
-
-            <span style="color:#94A3B8;">
-                &nbsp;|&nbsp;
-            </span>
-
-            <span style="
-                color:#94A3B8;
-            ">
-                RSI:
-                {item['rsi']:.1f}
-            </span>
-
-            <span style="color:#94A3B8;">
-                &nbsp;|&nbsp;
-            </span>
-
-            <span style="
-                color:#94A3B8;
-            ">
-                RVOL:
-                {item['rvol']:.2f}x
-            </span>
-
-        </div>
-
-        <div>
-
-            <div class="{badge_class}">
-                Skor:
-                {score:.1f}
-                / 100
-            </div>
-
-        </div>
-
-    </div>
-
-    <hr style="
-        border-color:#334155;
-        margin:12px 0;
-    ">
-
-    <div style="
-        display:flex;
-        justify-content:space-between;
-        font-size:0.9rem;
-        color:#CBD5E1;
-    ">
-
-        <div>
-            🎯
-            <b>TP1:</b>
-
-            <span style="
-                color:#34D399;
-            ">
-                {item['tp1']:.2f} TL
-            </span>
-        </div>
-
-        <div>
-            🎯
-            <b>TP2:</b>
-
-            <span style="
-                color:#10B981;
-            ">
-                {item['tp2']:.2f} TL
-            </span>
-        </div>
-
-        <div>
-            🛑
-            <b>Stop Loss:</b>
-
-            <span style="
-                color:#EF4444;
-            ">
-                {item['stop_loss']:.2f} TL
-            </span>
-        </div>
-
-    </div>
-
-</div>
-"""
-
-                # ------------------------------------------------------
-                # DEDENT + MARKDOWN
-                # ------------------------------------------------------
-
-                st.markdown(
-                    textwrap.dedent(
-                        card_html
-                    ),
-                    unsafe_allow_html=True
-                )
-
-            # ==========================================================
-            # TOP PICK
-            # ==========================================================
+                render_signal_card(item)
 
             top_pick = (
                 signals[0]
@@ -2511,70 +1250,10 @@ def main():
 
             if top_pick:
 
-                st.markdown(
-                    "---"
-                )
-
-                st.subheader(
-                    "🏆 En Yüksek Skorlu Aday"
-                )
-
-                top_score = float(
-                    top_pick["score"]
-                )
-
-                st.info(
-                    f"{top_pick['symbol']} "
-                    f"| Skor: {top_score:.1f}/100 "
-                    f"| Fiyat: "
-                    f"{top_pick['price']:.2f} TL"
-                )
-
-                # ------------------------------------------------------
-                # LAYER BREAKDOWN
-                # ------------------------------------------------------
-
-                with st.expander(
-                    "🔍 Skor Katmanlarını Gör"
-                ):
-
-                    c1, c2, c3, c4, c5 = st.columns(5)
-
-                    c1.metric(
-                        "Trend",
-                        f"{top_pick['layer1']:.0f}/25"
-                    )
-
-                    c2.metric(
-                        "Momentum",
-                        f"{top_pick['layer2']:.0f}/25"
-                    )
-
-                    c3.metric(
-                        "Relative Strength",
-                        f"{top_pick['layer3']:.1f}/20"
-                    )
-
-                    c4.metric(
-                        "Volume / Flow",
-                        f"{top_pick['layer4']:.0f}/15"
-                    )
-
-                    c5.metric(
-                        "Structure",
-                        f"{top_pick['layer5']:.0f}/15"
-                    )
-
-                # ------------------------------------------------------
-                # PAPER TRADE
-                # ------------------------------------------------------
-
                 if st.button(
-                    f"📥 "
-                    f"{top_pick['symbol']} "
-                    f"İçin ATR Bazlı Dinamik Paper Trade Emri",
-                    key="btn_paper_trade",
-                    use_container_width=True
+                    f"📥 {top_pick['symbol']} İçin "
+                    f"ATR Bazlı Dinamik Paper Trade Emri",
+                    key="btn_paper_trade"
                 ):
 
                     current_cash = (
@@ -2584,42 +1263,28 @@ def main():
 
                     risk_budget = (
                         current_cash
-                        *
-                        (
-                            risk_pct /
-                            100.0
-                        )
+                        * (risk_pct / 100.0)
                     )
 
                     risk_distance = (
-                        2.0
-                        *
-                        top_pick["atr"]
+                        2.0 * top_pick["atr"]
                     )
 
-                    if risk_distance > 0:
-
-                        dynamic_shares = int(
-                            risk_budget /
-                            risk_distance
+                    dynamic_shares = (
+                        int(
+                            risk_budget
+                            / risk_distance
                         )
-
-                    else:
-
-                        dynamic_shares = 1
-
-                    # --------------------------------------------------
-                    # MAX CAPITAL
-                    # --------------------------------------------------
+                        if risk_distance > 0
+                        else 100
+                    )
 
                     max_shares = int(
                         (
                             current_cash
-                            *
-                            0.95
+                            * 0.95
                         )
-                        /
-                        top_pick["price"]
+                        / top_pick["price"]
                     )
 
                     dynamic_shares = min(
@@ -2628,156 +1293,52 @@ def main():
                     )
 
                     if dynamic_shares < 1:
-
                         dynamic_shares = 1
 
-                    # --------------------------------------------------
-                    # COST
-                    # --------------------------------------------------
-
-                    entry_cost = (
-                        dynamic_shares
-                        *
-                        top_pick["price"]
-                        *
-                        1.000525
+                    connection = sqlite3.connect(
+                        DB_FILE
                     )
 
-                    if entry_cost > current_cash:
+                    cursor = connection.cursor()
 
-                        st.error(
-                            "Yetersiz nakit."
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO active_positions_ledger
+                        (
+                            symbol,
+                            entry_date,
+                            entry_price,
+                            shares_allocated,
+                            stop_loss_price,
+                            take_profit_1,
+                            take_profit_2,
+                            quant_score,
+                            regime_status
                         )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        top_pick["symbol"],
+                        datetime.now().strftime(
+                            "%Y-%m-%d %H:%M:%S"
+                        ),
+                        top_pick["price"],
+                        dynamic_shares,
+                        top_pick["stop_loss"],
+                        top_pick["tp1"],
+                        top_pick["tp2"],
+                        top_pick["score"],
+                        "BULLISH"
+                    ))
 
-                    else:
+                    connection.commit()
+                    connection.close()
 
-                        connection = sqlite3.connect(
-                            DB_FILE
-                        )
+                    st.success(
+                        f"{top_pick['symbol']} | "
+                        f"{dynamic_shares} Lot dinamik "
+                        f"hesaplanarak portföye eklendi!"
+                    )
 
-                        cursor = connection.cursor()
-
-                        # ------------------------------------------------
-                        # Existing position check
-                        # ------------------------------------------------
-
-                        cursor.execute("""
-                            SELECT symbol
-                            FROM active_positions_ledger
-                            WHERE symbol = ?
-                        """, (
-                            top_pick["symbol"],
-                        ))
-
-                        existing = (
-                            cursor.fetchone()
-                        )
-
-                        if existing:
-
-                            connection.close()
-
-                            st.warning(
-                                f"{top_pick['symbol']} "
-                                f"zaten açık pozisyonda."
-                            )
-
-                        else:
-
-                            # --------------------------------------------
-                            # POSITION
-                            # --------------------------------------------
-
-                            cursor.execute("""
-                                INSERT INTO active_positions_ledger
-                                (
-                                    symbol,
-                                    entry_date,
-                                    entry_price,
-                                    shares_allocated,
-                                    stop_loss_price,
-                                    take_profit_1,
-                                    take_profit_2,
-                                    quant_score,
-                                    regime_status
-                                )
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """, (
-                                top_pick["symbol"],
-
-                                datetime.now().strftime(
-                                    "%Y-%m-%d %H:%M:%S"
-                                ),
-
-                                top_pick["price"],
-
-                                dynamic_shares,
-
-                                top_pick["stop_loss"],
-
-                                top_pick["tp1"],
-
-                                top_pick["tp2"],
-
-                                top_pick["score"],
-
-                                "BULLISH"
-                            ))
-
-                            # --------------------------------------------
-                            # CASH DEDUCTION
-                            # --------------------------------------------
-
-                            new_cash = (
-                                current_cash
-                                -
-                                entry_cost
-                            )
-
-                            cursor.execute("""
-                                SELECT COUNT(*)
-                                FROM active_positions_ledger
-                            """)
-
-                            open_count = (
-                                cursor.fetchone()[0]
-                            )
-
-                            now_str = (
-                                datetime.now()
-                                .strftime(
-                                    "%Y-%m-%d %H:%M:%S"
-                                )
-                            )
-
-                            cursor.execute("""
-                                INSERT INTO portfolio_nav_history
-                                (
-                                    timestamp,
-                                    cash_balance,
-                                    total_portfolio_nav,
-                                    open_positions_count
-                                )
-                                VALUES (?, ?, ?, ?)
-                            """, (
-                                now_str,
-                                new_cash,
-                                new_cash,
-                                open_count
-                            ))
-
-                            connection.commit()
-
-                            connection.close()
-
-                            st.success(
-                                f"{top_pick['symbol']} | "
-                                f"{dynamic_shares} Lot "
-                                f"dinamik hesaplanarak "
-                                f"paper portföye eklendi!"
-                            )
-
-                            st.rerun()
+                    st.rerun()
 
         else:
 
@@ -2785,9 +1346,9 @@ def main():
                 "Sol menüden kurumsal taramayı başlatın."
             )
 
-    # ==================================================================
+    # --------------------------------------------------------------------------
     # PORTFOLIO
-    # ==================================================================
+    # --------------------------------------------------------------------------
 
     with col_side:
 
@@ -2807,48 +1368,20 @@ def main():
 
         open_positions_val = 0.0
 
-        # ==============================================================
-        # ACTIVE POSITIONS
-        # ==============================================================
-
         if not active_positions_df.empty:
 
             for _, pos in (
                 active_positions_df.iterrows()
             ):
 
-                symbol = pos[
-                    "symbol"
-                ]
-
-                curr_mkt_p = (
-                    get_live_price(
-                        symbol
-                    )
-                )
-
-                if curr_mkt_p <= 0:
-
-                    curr_mkt_p = float(
-                        pos["entry_price"]
-                    )
-
-                shares = int(
-                    pos[
-                        "shares_allocated"
-                    ]
-                )
-
-                entry_price = float(
-                    pos[
-                        "entry_price"
-                    ]
+                curr_mkt_p = get_latest_price(
+                    pos["symbol"],
+                    pos["entry_price"]
                 )
 
                 pos_market_val = (
-                    shares
-                    *
-                    curr_mkt_p
+                    pos["shares_allocated"]
+                    * curr_mkt_p
                 )
 
                 open_positions_val += (
@@ -2857,148 +1390,74 @@ def main():
 
                 pnl_tl = (
                     pos_market_val
-                    -
-                    (
-                        shares
-                        *
-                        entry_price
+                    - (
+                        pos["shares_allocated"]
+                        * pos["entry_price"]
                     )
                 )
 
-                if entry_price > 0:
+                pnl_pct_pos = (
+                    (curr_mkt_p / pos["entry_price"])
+                    - 1
+                ) * 100
 
-                    pnl_pct_pos = (
-                        (
-                            curr_mkt_p /
-                            entry_price
-                        )
-                        -
-                        1
-                    ) * 100
-
-                else:
-
-                    pnl_pct_pos = 0
-
-                if pnl_tl >= 0:
-
-                    color_pnl = (
-                        "#34D399"
-                    )
-
-                else:
-
-                    color_pnl = (
-                        "#EF4444"
-                    )
-
-                # ------------------------------------------------------
-                # POSITION CARD
-                # ------------------------------------------------------
-
-                position_html = f"""
-<div class="terminal-card">
-
-    <b>{symbol}</b>
-    ({shares} Lot)
-
-    <br>
-
-    <b>Güncel Fiyat:</b>
-    {curr_mkt_p:.2f} TL
-
-    <br>
-
-    <b>Anlık PnL:</b>
-
-    <span style="
-        color:{color_pnl};
-    ">
-        {pnl_tl:+,.2f} TL
-        ({pnl_pct_pos:+.2f}%)
-    </span>
-
-    <br>
-
-    <b>Stop:</b>
-
-    <span style="
-        color:#EF4444;
-    ">
-        {float(pos['stop_loss_price']):.2f} TL
-    </span>
-
-    <br>
-
-    <b>TP1:</b>
-
-    <span style="
-        color:#34D399;
-    ">
-        {float(pos['take_profit_1']):.2f} TL
-    </span>
-
-    <br>
-
-    <b>TP2:</b>
-
-    <span style="
-        color:#10B981;
-    ">
-        {float(pos['take_profit_2']):.2f} TL
-    </span>
-
-</div>
-"""
-
-                st.markdown(
-                    textwrap.dedent(
-                        position_html
-                    ),
-                    unsafe_allow_html=True
+                color_pnl = (
+                    "#34D399"
+                    if pnl_tl >= 0
+                    else "#EF4444"
                 )
 
-                # ------------------------------------------------------
-                # CLOSE BUTTON
-                # ------------------------------------------------------
+                portfolio_html = f"""
+                <div class="terminal-card">
+                    <b>{pos["symbol"]}</b>
+                    ({pos["shares_allocated"]} Lot)<br>
+
+                    <b>Güncel Fiyat:</b>
+                    {curr_mkt_p:.2f} TL<br>
+
+                    <b>Anlık PnL:</b>
+                    <span style="color:{color_pnl};">
+                        {pnl_tl:+,.2f} TL
+                        ({pnl_pct_pos:+.2f}%)
+                    </span><br>
+
+                    <b>Stop:</b>
+                    <span style="color:#EF4444;">
+                        {pos["stop_loss_price"]:.2f} TL
+                    </span>
+                </div>
+                """
+
+                if hasattr(st, "html"):
+                    st.html(portfolio_html)
+                else:
+                    st.markdown(
+                        textwrap.dedent(portfolio_html),
+                        unsafe_allow_html=True
+                    )
 
                 if st.button(
-                    f"Kapat: {symbol}",
-                    key=f"close_{symbol}"
+                    f"Kapat: {pos['symbol']}",
+                    key=f"close_{pos['symbol']}"
                 ):
-
                     InstitutionalDatabaseManager.execute_manual_close(
-                        symbol,
+                        pos["symbol"],
                         curr_mkt_p
                     )
-
-                    st.success(
-                        f"{symbol} pozisyonu kapatıldı."
-                    )
-
                     st.rerun()
 
         else:
 
             st.markdown(
-                """
-                <p style="
-                    color:#64748B;
-                ">
-                    Aktif açık pozisyon bulunmuyor.
-                </p>
-                """,
+                '<p style="color:#64748B;">'
+                'Aktif açık pozisyon bulunmuyor.'
+                '</p>',
                 unsafe_allow_html=True
             )
 
-        # ==============================================================
-        # TOTAL NAV
-        # ==============================================================
-
         total_nav = (
             current_cash
-            +
-            open_positions_val
+            + open_positions_val
         )
 
         st.metric(
@@ -3007,9 +1466,9 @@ def main():
             f"Nakit: {current_cash:,.2f} TL"
         )
 
-    # ==================================================================
+    # --------------------------------------------------------------------------
     # BACKTEST
-    # ==================================================================
+    # --------------------------------------------------------------------------
 
     if run_backtest:
 
@@ -3017,27 +1476,21 @@ def main():
             "KCHOL üzerinde profesyonel quant backtest çalıştırılıyor..."
         ):
 
-            bt_df = download_single_ticker(
+            bt_df = download_single(
                 "KCHOL.IS",
-                period=f"{years_input}y",
-                interval="1d"
+                f"{years_input}y"
             )
 
-            if bt_df is None or bt_df.empty:
+            if bt_df.empty:
 
                 st.error(
-                    "KCHOL.IS için yeterli Yahoo Finance verisi alınamadı."
+                    "KCHOL.IS için yeterli veri alınamadı."
                 )
 
             else:
 
-                (
-                    curve,
-                    trades,
-                    metrics
-                ) = (
-                    BacktestSimulationEngine
-                    .run_backtest(
+                curve, trades, metrics = (
+                    BacktestSimulationEngine.run_backtest(
                         bt_df,
                         starting_capital=100000.0,
                         user_risk_pct=risk_pct
@@ -3046,26 +1499,15 @@ def main():
 
                 if curve:
 
-                    final_nav = float(
-                        curve[-1]
-                    )
+                    final_nav = float(curve[-1])
 
                     net_ret = (
-                        (
-                            final_nav /
-                            100000.0
-                        )
-                        -
-                        1
+                        (final_nav / 100000.0) - 1
                     ) * 100
 
                     st.success(
                         "Kurumsal Backtest Başarıyla Tamamlandı!"
                     )
-
-                    # ==================================================
-                    # METRICS
-                    # ==================================================
 
                     (
                         col_b1,
@@ -3096,63 +1538,28 @@ def main():
                         f"{metrics['win_rate']:.1f}%"
                     )
 
-                    pf = metrics[
-                        "profit_factor"
-                    ]
+                    pf = metrics["profit_factor"]
 
                     if np.isinf(pf):
-
                         pf_text = "∞"
-
                     else:
-
-                        pf_text = (
-                            f"{pf:.2f}"
-                        )
+                        pf_text = f"{pf:.2f}"
 
                     col_b5.metric(
                         "Profit Factor",
                         pf_text
                     )
 
-                    # ==================================================
-                    # EQUITY CURVE
-                    # ==================================================
-
-                    st.subheader(
-                        "📈 Equity Curve"
-                    )
-
                     st.line_chart(
                         pd.Series(
                             curve,
-                            name="NAV"
+                            name="Portföy NAV"
                         )
                     )
 
-                    # ==================================================
-                    # TRADE SUMMARY
-                    # ==================================================
-
-                    st.subheader(
-                        "📊 İşlem Özeti"
+                    st.caption(
+                        f"Toplam tamamlanan işlem: {len(trades)}"
                     )
-
-                    st.metric(
-                        "Toplam İşlem",
-                        len(trades)
-                    )
-
-                    if trades:
-
-                        trade_df = pd.DataFrame({
-                            "İşlem PnL (TL)": trades
-                        })
-
-                        st.dataframe(
-                            trade_df,
-                            use_container_width=True
-                        )
 
                 else:
 
@@ -3161,10 +1568,5 @@ def main():
                     )
 
 
-# ==============================================================================
-# RUN
-# ==============================================================================
-
 if __name__ == "__main__":
-
     main()
