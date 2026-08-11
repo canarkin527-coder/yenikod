@@ -3,14 +3,8 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+from sklearn.isotonic import IsotonicRegression
 from datetime import datetime, timedelta
-
-# Güvenli scikit-learn yükleme kontrolü
-try:
-    from sklearn.isotonic import IsotonicRegression
-    SKLEARN_AVAILABLE = True
-except ImportError:
-    SKLEARN_AVAILABLE = False
 
 # ==========================================
 # 1. BİST 100 SEMBOL LİSTESİ VE VERİ ÇEKİMİ
@@ -18,6 +12,7 @@ except ImportError:
 @st.cache_data(ttl=3600)
 def get_bist100_tickers():
     """BİST 100 güncel sembol listesini getirir."""
+    # Varsayılan BİST100 likit ana çekirdek listesi (Çekim hatasına karşı fallback)
     default_bist100 = [
         "THYAO.IS", "AKBNK.IS", "GARAN.IS", "BIMAS.IS", "EREGL.IS", "TUPRS.IS", 
         "ISCTR.IS", "SAHOL.IS", "KCHOL.IS", "ASELS.IS", "SISE.IS", "YKBNK.IS",
@@ -66,6 +61,7 @@ class TechnicalEngine:
         df['RVOL'] = df['Volume'] / (df['Volume'].rolling(20).mean() + 1e-10)
         
         # Continuous Factor Scoring (Sürekli Skorlama)
+        # Binary (0 veya 15) yerine EMA200'den olan mesafenin normalize puanı
         ema_dist = (df['Close'] - df['EMA200']) / df['EMA200']
         df['Trend_Score'] = np.clip(100 * (1 / (1 + np.exp(-10 * ema_dist))), 0, 100)
         
@@ -81,6 +77,7 @@ class SMCEngine:
         roll_max = df['High'].shift(1).rolling(lookback).max()
         df['Prev_Structure_High'] = roll_max
         
+        # Tepe kırılımı + Hacim/Gövde teyidi
         raw_bos = df['Close'] > df['Prev_Structure_High']
         body_pct = abs(df['Close'] - df['Open']) / (df['High'] - df['Low'] + 1e-10)
         
@@ -100,16 +97,22 @@ class MultiStockPortfolioEngine:
         self.slippage = slippage_rate
 
     def run_portfolio_backtest(self, price_data_dict, signals_dict):
+        """
+        Tüm hisseleri TEK BİR SERMAYE HAVUZU üzerinden gerçek zamanlı simüle eder.
+        Gap-Down SL ve Komisyon/BSMV/Slipaj dahil edilmiştir.
+        """
+        # Ortak tarih indeksini oluştur
         all_dates = sorted(list(set().union(*[df.index for df in price_data_dict.values()])))
         
         cash = self.initial_capital
-        positions = {} 
+        positions = {} # {ticker: {'shares': x, 'sl': y, 'entry_price': z}}
         portfolio_history = []
         trade_logs = []
 
         for current_date in all_dates:
             current_portfolio_value = cash
             
+            # 1. Mevcut Pozisyonların Değerini Hesapla ve SL Kontrolü Yap
             for ticker in list(positions.keys()):
                 pos = positions[ticker]
                 df = price_data_dict[ticker]
@@ -122,8 +125,11 @@ class MultiStockPortfolioEngine:
                 low_p = row['Low']
                 close_p = row['Close']
                 
+                # Gap-Aware Stop Loss Kontrolü
                 if low_p <= pos['sl']:
+                    # Eğer Gap-Down olduysa Open, olmadıysa SL fiyatından çık ve Slipaj uygula
                     actual_exit_price = min(open_p, pos['sl']) * (1 - self.slippage)
+                    
                     gross_revenue = pos['shares'] * actual_exit_price
                     comm = gross_revenue * self.commission_rate
                     bsmv = comm * self.bsmv_rate
@@ -139,20 +145,23 @@ class MultiStockPortfolioEngine:
                 else:
                     current_portfolio_value += pos['shares'] * close_p
 
+            # 2. Yeni Sinyal Kontrolü ve Alım Yapma (Nakit İmkanı Dahilinde)
             for ticker, df in price_data_dict.items():
                 if current_date in df.index and ticker not in positions:
                     if signals_dict[ticker].loc[current_date] if current_date in signals_dict[ticker].index else False:
                         row = df.loc[current_date]
-                        entry_price = row['Close'] * (1 + self.slippage)
+                        entry_price = row['Close'] * (1 + self.slippage) # Alış slipajı
                         atr = row['ATR'] if 'ATR' in row and not np.isnan(row['ATR']) else entry_price * 0.03
                         
                         sl_price = entry_price - (1.5 * atr)
                         risk_per_share = entry_price - sl_price
                         
                         if risk_per_share > 0:
+                            # Risk Bazlı Pozisyon Büyüklüğü
                             max_risk_amount = current_portfolio_value * self.max_risk_per_trade
                             target_shares = int(max_risk_amount / risk_per_share)
                             
+                            # Portföy Maksimum %20 Pozisyon Limiti
                             max_position_value = current_portfolio_value * 0.20
                             target_shares = min(target_shares, int(max_position_value / entry_price))
                             
@@ -161,6 +170,7 @@ class MultiStockPortfolioEngine:
                             bsmv = comm * self.bsmv_rate
                             total_cost = cost + comm + bsmv
                             
+                            # Nakit Yeterli mi?
                             if total_cost <= cash and target_shares > 0:
                                 cash -= total_cost
                                 positions[ticker] = {
@@ -173,6 +183,7 @@ class MultiStockPortfolioEngine:
                                     'Price': entry_price, 'Shares': target_shares, 'P&L': 0.0
                                 })
 
+            # Gün Sonu Toplam Portföy Değeri
             unrealized_val = sum([p['shares'] * price_data_dict[t].loc[current_date]['Close'] 
                                  for t, p in positions.items() if current_date in price_data_dict[t].index])
             portfolio_history.append({'Date': current_date, 'Equity': cash + unrealized_val})
@@ -181,95 +192,62 @@ class MultiStockPortfolioEngine:
         return equity_df, pd.DataFrame(trade_logs)
 
 # ==========================================
-# 5. STREAMLIT MODERN ARAYÜZÜ VE YÜRÜTME
+# 5. STREAMLIT ARAYÜZÜ VE YÜRÜTME
 # ==========================================
 def main():
-    st.set_page_config(
-        page_title="Quant Master v56.5", 
-        page_icon="📈", 
-        layout="wide",
-        initial_sidebar_state="expanded"
-    )
+    st.set_page_config(page_title="Quant Master v56.5", layout="wide")
+    st.title("🏆 QUANT MASTER v56.5 — Production Portfolio Engine")
     
-    st.markdown("""
-        <style>
-            .main { background-color: #0e1117; }
-            .stMetric { background-color: #161b22; padding: 15px; border-radius: 10px; border: 1px solid #30363d; }
-            .stAlert { border-radius: 10px; }
-        </style>
-    """, unsafe_allow_html=True)
-
-    st.markdown("# 🏆 QUANT MASTER v56.5")
-    st.markdown("### *Production-Grade Multi-Asset Portfolio Backtesting Engine*")
-    st.markdown("---")
-    
-    if not SKLEARN_AVAILABLE:
-        st.error("⚠️ Kritik Uyarı: `scikit-learn` kütüphanesi ortamda bulunamadı!")
-
-    with st.sidebar:
-        st.markdown("### ⚙️ Simülasyon Paneli")
-        st.markdown("---")
-        capital = st.number_input("💰 Başlangıç Sermayesi (TL)", value=1000000.0, step=100000.0, format="%.2f")
-        risk_per_trade = st.slider("🛡️ İşlem Başı Risk (%)", 0.5, 5.0, 2.0, 0.5) / 100
-        slippage = st.slider("⚡ Slipaj Oranı (%)", 0.0, 1.0, 0.1, 0.05) / 100
-        comm_rate = st.number_input(" Komisyon (On Binde)", value=5.0) / 10000
-        
-        st.markdown("---")
-        run_btn = st.button("🚀 Portföyü Simüle Et", type="primary", use_container_width=True)
+    st.sidebar.header("⚙️ Parametreler")
+    capital = st.sidebar.number_input("Başlangıç Sermayesi (TL)", value=1000000.0, step=100000.0)
+    risk_per_trade = st.sidebar.slider("İşlem Başı Risk (%)", 0.5, 5.0, 2.0) / 100
+    slippage = st.sidebar.slider("Slipaj Oranı (%)", 0.0, 1.0, 0.1) / 100
+    comm_rate = st.sidebar.number_input("Komisyon Oranı (On Binde)", value=5.0) / 10000
     
     tickers = get_bist100_tickers()
+    st.info(f"Taranacak BİST Sembol Sayısı: {len(tickers)}")
     
-    col_info1, col_info2, col_info3 = st.columns(3)
-    col_info1.metric("İzlenen Varlık Havuzu", f"{len(tickers)} Adet")
-    col_info2.metric("Strateji Yapısı", "SMC + Wilder RSI")
-    col_info3.metric("Risk Yönetimi", "Havuz Tabanlı Dinamik SL")
-    
-    st.markdown("---")
-
-    if run_btn:
+    if st.button("🚀 Gerçek Portföy Backtestini Çalıştır"):
         price_data = {}
         signals = {}
         errors = []
         
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
+        progress = st.progress(0)
         for i, ticker in enumerate(tickers):
-            status_text.text(f"İşleniyor... [{i+1}/{len(tickers)}] {ticker}")
             try:
                 df = yf.download(ticker, start="2023-01-01", progress=False)
                 if df.empty or len(df) < 200:
                     errors.append({"Ticker": ticker, "Error": "Yersiz/Yetersiz Veri"})
                     continue
                 
+                # MultiIndex Düzeltme (yfinance son sürümleri için)
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.get_level_values(0)
                     
                 df = TechnicalEngine.calculate_indicators(df)
                 df = SMCEngine.detect_bos(df)
                 
+                # Sinyal Mantığı: BOS + RSI Filtresi + Trend Puanı
                 df['Signal'] = df['BOS_Bullish'] & (df['RSI'] < 70) & (df['Trend_Score'] > 50)
                 
                 price_data[ticker] = df
                 signals[ticker] = df['Signal']
             except Exception as e:
                 errors.append({"Ticker": ticker, "Error": str(e)})
-                
-            progress_bar.progress((i + 1) / len(tickers))
+            progress.progress((i + 1) / len(tickers))
             
-        status_text.empty()
-        progress_bar.empty()
-            
-        st.markdown("### 📊 Tarama ve Çalıştırma Raporu")
-        r_col1, r_col2 = st.columns(2)
-        r_col1.metric("✅ Başarılı Taranan Varlık", len(price_data))
-        r_col2.metric("❌ Hatalı / Atlanan Varlık", len(errors))
+        # Error Logging Ekranı
+        st.subheader("📋 Tarama Raporu")
+        col1, col2 = st.columns(2)
+        col1.metric("Başarılı Taranan", len(price_data))
+        col2.metric("Hatalı/Atlanan", len(errors))
         
         if errors:
-            with st.expander("⚠️ Hata Detaylarını İncele"):
-                st.dataframe(pd.DataFrame(errors), use_container_width=True)
+            with st.expander("⚠️ Hata Detaylarını Gör"):
+                st.table(pd.DataFrame(errors))
                 
         if len(price_data) > 0:
+            # Portföy Simülasyonu
             engine = MultiStockPortfolioEngine(
                 initial_capital=capital,
                 max_risk_per_trade=risk_per_trade,
@@ -278,32 +256,17 @@ def main():
             )
             equity_df, trade_logs = engine.run_portfolio_backtest(price_data, signals)
             
-            st.markdown("---")
-            st.markdown("### 📈 Gerçek Portföy Sermaye Eğrisi (Equity Curve)")
-            
+            # Grafik Gösterimi
+            st.subheader("📈 Verified Portfolio Equity Curve (Gerçek Portföy Simülasyonu)")
             fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=equity_df.index, 
-                y=equity_df['Equity'], 
-                mode='lines', 
-                name='Portföy Değeri (TL)',
-                line=dict(color='#00ffcc', width=2)
-            ))
-            fig.update_layout(
-                template="plotly_dark", 
-                xaxis_title="Tarih", 
-                yaxis_title="Toplam Sermaye (TL)",
-                hovermode="x unified",
-                plot_bgcolor='rgba(0,0,0,0)',
-                paper_bgcolor='rgba(0,0,0,0)'
-            )
+            fig.add_trace(go.Scatter(x=equity_df.index, y=equity_df['Equity'], mode='lines', name='Portföy Değeri (TL)'))
+            fig.update_layout(template="plotly_dark", xaxis_title="Tarih", yaxis_title="Sermaye (TL)")
             st.plotly_chart(fig, use_container_width=True)
             
+            # İşlem Geçmişi
             if not trade_logs.empty:
-                st.markdown("### 📑 Son Gerçekleşen İşlem Logları")
-                st.dataframe(trade_logs.tail(20), use_container_width=True)
-        else:
-            st.warning("⚠️ İşlem yapabilecek yeterli veri çekilemedi.")
+                st.subheader("📑 Gerçekleştirilen İşlem Logları")
+                st.dataframe(trade_logs.tail(20))
 
 if __name__ == "__main__":
     main()
