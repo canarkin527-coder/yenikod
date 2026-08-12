@@ -114,6 +114,7 @@ def validate_ohlcv_frame(df) -> bool:
 
 class Database:
 
+
 @staticmethod
     def connect():
         return sqlite3.connect(DB_FILE, timeout=30)
@@ -274,6 +275,7 @@ def normalize_ohlcv(df):
 # ==============================================================================
 
 class IndicatorEngine:
+
 
 @staticmethod
     def _adx(df, n=14):
@@ -644,6 +646,7 @@ def fetch_live_prices(symbols):
 
 class SignalEngine:
 
+
 @staticmethod
     def analyze( symbol, daily, benchmark, live_price=None, h4=None ):
         ind = IndicatorEngine.calculate(daily)
@@ -981,6 +984,7 @@ def scan_market(symbols, period, workers=8):
 # ==============================================================================
 
 class BacktestEngine:
+
 
 @staticmethod
     def run( df, starting_capital=100000.0, risk_pct=2.0 ):
