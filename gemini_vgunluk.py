@@ -112,7 +112,9 @@ def validate_ohlcv_frame(df) -> bool:
 # DATABASE
 # ==============================================================================
 
-class Database:
+class BirSinif:
+    @staticmethod
+    def ...
 
 
 @staticmethod
