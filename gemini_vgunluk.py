@@ -1,3 +1,133 @@
+# ==============================================================================
+# QUANT MASTER v67.0 — HIGH PRECISION FULL / BIST WIDE UNIVERSE
+# ==============================================================================
+# v67 preserves the complete v66 implementation and adds a structured
+# high-precision configuration/validation layer. The original application
+# code remains intact below.
+# ==============================================================================
+
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple, Any
+import math
+import time
+
+QUANT_MASTER_VERSION = "v67.0"
+SIGNAL_ENGINE_VERSION = "HIGH_PRECISION_v67"
+
+@dataclass(frozen=True)
+class HighPrecisionConfig:
+    """Central configuration for the high-precision signal gate."""
+    adx_veto: float = 20.0
+    daily_ema_fast: int = 20
+    daily_ema_slow: int = 50
+    daily_ema_trend: int = 200
+    htf_ema_fast: int = 20
+    htf_ema_slow: int = 50
+    rvol_minimum: float = 1.10
+    rvol_strong: float = 1.50
+    rsi_minimum: float = 50.0
+    rsi_soft_ceiling: float = 75.0
+    poc_below_tolerance_atr: float = 0.25
+    minimum_score_a: float = 75.0
+    minimum_score_aplus: float = 85.0
+    atr_stop_multiple: float = 2.0
+    atr_tp1_multiple: float = 1.5
+    atr_tp2_multiple: float = 3.0
+
+HP_CONFIG = HighPrecisionConfig()
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        result = float(value)
+        return result if math.isfinite(result) else default
+    except (TypeError, ValueError):
+        return default
+
+def validate_ohlcv_frame(df):
+    """Return True only when the required OHLCV columns are available."""
+    required = {"Open", "High", "Low", "Close", "Volume"}
+    try:
+        return df is not None and required.issubset(set(df.columns))
+    except Exception:
+        return False
+
+def classify_signal_quality(score: float, adx: float, rvol: float, daily_trend: bool, htf_trend: bool, poc_clear: bool) -> str:
+    """Conservative quality classification; vetoes override score."""
+    score = _safe_float(score)
+    adx = _safe_float(adx)
+    rvol = _safe_float(rvol)
+
+    if adx < HP_CONFIG.adx_veto:
+        return "VETO — YATAY PİYASA"
+    if not daily_trend:
+        return "VETO — GÜNLÜK TREND"
+    if not htf_trend:
+        return "VETO — 4H TREND"
+    if not poc_clear:
+        return "VETO — POC ALTI"
+    if score >= HP_CONFIG.minimum_score_aplus and rvol >= HP_CONFIG.rvol_strong:
+        return "A+"
+    if score >= HP_CONFIG.minimum_score_a:
+        return "A"
+    if score >= 65:
+        return "B+"
+    if score >= 50:
+        return "B"
+    return "C"
+
+def calculate_vpvr_poc(df, bins: int = 48) -> Optional[float]:
+    """Lightweight volume-profile POC approximation."""
+    if not validate_ohlcv_frame(df) or len(df) < 20:
+        return None
+    try:
+        low = _safe_float(df["Low"].min())
+        high = _safe_float(df["High"].max())
+        if high <= low:
+            return None
+        typical = (df["High"] + df["Low"] + df["Close"]) / 3.0
+        volume = df["Volume"].fillna(0).astype(float)
+        hist, edges = __import__("numpy").histogram(
+            typical.astype(float), bins=bins, range=(low, high),
+            weights=volume
+        )
+        if len(hist) == 0:
+            return None
+        idx = int(hist.argmax())
+        return float((edges[idx] + edges[idx + 1]) / 2.0)
+    except Exception:
+        return None
+
+def poc_is_clear_for_long(price: float, poc: Optional[float], atr: float) -> bool:
+    """Reject longs immediately below the high-volume POC zone."""
+    if poc is None:
+        return True
+    price = _safe_float(price)
+    atr = max(_safe_float(atr), 1e-9)
+    return price >= poc - HP_CONFIG.poc_below_tolerance_atr * atr
+
+def high_precision_gate(score: float, adx: float, daily_ema20: float, daily_ema50: float, daily_ema200: float, htf_ema20: float, htf_ema50: float, price: float, poc: Optional[float], atr: float, rvol: float) -> Tuple[bool, str]:
+    """Single deterministic gate used by future signal integrations."""
+    daily_ok = daily_ema20 > daily_ema50 and daily_ema50 > daily_ema200
+    htf_ok = htf_ema20 > htf_ema50
+    poc_ok = poc_is_clear_for_long(price, poc, atr)
+    adx_ok = _safe_float(adx) >= HP_CONFIG.adx_veto
+
+    if not adx_ok:
+        return False, "ADX < 20"
+    if not daily_ok:
+        return False, "GÜNLÜK EMA TRENDİ UYGUN DEĞİL"
+    if not htf_ok:
+        return False, "4H EMA20 <= EMA50"
+    if not poc_ok:
+        return False, "FİYAT POC BÖLGESİNİN ALTINDA"
+    if _safe_float(rvol) < HP_CONFIG.rvol_minimum:
+        return False, "RVOL YETERSİZ"
+    if _safe_float(score) < 65:
+        return False, "SKOR YETERSİZ"
+    return True, "HIGH PRECISION LONG"
+
+# ==============================================================================
+
 
 import streamlit as st
 import yfinance as yf
@@ -12,7 +142,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 warnings.filterwarnings("ignore")
 
 # ==============================================================================
-# QUANT MASTER v66 — HIGH PRECISION FULL BIST TERMINAL
+# QUANT MASTER v67 — HIGH PRECISION FULL BIST TERMINAL
 # ==============================================================================
 # Tam BIST evreni + hızlı toplu veri + canlı/son fiyat
 # Günlük + 4H MTF, ADX veto, VPVR/POC veto, RS, RSI, MACD, RVOL, OBV,
@@ -20,7 +150,7 @@ warnings.filterwarnings("ignore")
 # ==============================================================================
 
 st.set_page_config(
-    page_title="QUANT MASTER v66 | High Precision",
+    page_title="QUANT MASTER v67 | High Precision",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -607,7 +737,7 @@ def main():
     Database.init()
 
     st.markdown(
-        '<h1 style="color:#38BDF8;font-weight:900">⚡ QUANT MASTER v66 | HIGH PRECISION BIST TERMINAL</h1>',
+        '<h1 style="color:#38BDF8;font-weight:900">⚡ QUANT MASTER v67 | HIGH PRECISION BIST TERMINAL</h1>',
         unsafe_allow_html=True
     )
     st.caption("A+ / A / B+ seçici sinyal motoru • canlı/son fiyat • günlük + 4H MTF • ADX • VPVR/POC")
