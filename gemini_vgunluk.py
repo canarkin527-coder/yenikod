@@ -12,7 +12,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 # ============================================================
-# QUANT MASTER v65.0
+# QUANT MASTER v65.1 - FAST LIVE SCANNER
 # DYNAMIC BIST UNIVERSE + ADX + 4H MTF + VPVR/POC
 # ============================================================
 
@@ -25,30 +25,7 @@ st.set_page_config(
 
 # --------------------------- THEME ---------------------------
 
-st.markdown("""
-<style>
-.stApp {background:#030712;}
-.block-container {padding-top:1.2rem;}
-.q-card {
-    background:linear-gradient(135deg,#0F172A,#111827);
-    border:1px solid #334155;
-    border-radius:14px;
-    padding:18px;
-    margin:8px 0;
-}
-.q-title {font-weight:900;color:#F8FAFC;}
-.q-muted {color:#94A3B8;}
-.q-score {
-    display:inline-block;
-    padding:6px 12px;
-    border-radius:8px;
-    font-weight:900;
-}
-.q-good {background:#064E3B;color:#34D399;border:1px solid #10B981;}
-.q-mid {background:#1E3A8A;color:#60A5FA;border:1px solid #3B82F6;}
-.q-bad {background:#3F1D1D;color:#FCA5A5;border:1px solid #EF4444;}
-</style>
-""", unsafe_allow_html=True)
+st.markdown(""" <style> .stApp {background:#030712;} .block-container {padding-top:1.2rem;} .q-card { background:linear-gradient(135deg,#0F172A,#111827); border:1px solid #334155; border-radius:14px; padding:18px; margin:8px 0; } .q-title {font-weight:900;color:#F8FAFC;} .q-muted {color:#94A3B8;} .q-score { display:inline-block; padding:6px 12px; border-radius:8px; font-weight:900; } .q-good {background:#064E3B;color:#34D399;border:1px solid #10B981;} .q-mid {background:#1E3A8A;color:#60A5FA;border:1px solid #3B82F6;} .q-bad {background:#3F1D1D;color:#FCA5A5;border:1px solid #EF4444;} </style> """, unsafe_allow_html=True)
 
 DB_FILE = "quant_master_v65.db"
 TV_SCAN_URL = "https://scanner.tradingview.com/turkey/scan"
@@ -59,43 +36,7 @@ TV_SCAN_URL = "https://scanner.tradingview.com/turkey/scan"
 
 # TradingView üzerinden güncel evren alınamazsa kullanılacak geniş
 # yedek liste. Ana yöntem dinamik TradingView taramasıdır.
-FALLBACK_BIST = """
-AEFES AKBNK AKENR AKFGY AKFYE AKGRT AKMGY AKSA AKSEN AKSGY ALARK ALBRK
-ALCTL ALFAS ALGYO ALKA ALKIM ALKLC ALTNY ANELE ANHYT ANSGR ARCLK ARENA
-ARZUM ASELS ASGYO ASUZU ATAGY ATAKP ATATP ATEKS ATLAS AVHOL AVOD AYDEM
-AYEN BAKAB BALAT BANVT BARMA BASGZ BAYRK BEGYO BEYAZ BFREN BIGEN BIMAS
-BINBN BIZIM BJKAS BLCYT BMSCH BMSTL BNTAS BOBET BORLS BORSK BOSSA BRISA
-BRKO BRKSN BRKVY BRLSM BRSAN BRYAT BSOKE BTCIM BUCIM BURCE BURVA BVSAN
-CANTE CCOLA CELHA CEMAS CEMTS CEOEM CIMSA CLEBI CMBTN CONSE COSMO CUSAN
-CVKMD CWENE DAGHL DAGI DAPGM DARDL DCTTR DENGE DERHL DERIM DESA DESPC
-DEVA DGATE DGGYO DGNMO DITAS DMRGD DOAS DOBUR DOCO DOHOL DOKTA DURDO
-DYOBY ECILC ECZYT EDATA EGEEN EGGUB EKGYO EKSUN ELITE EMKEL ENERY ENJSA
-ENKAI ENSRI ENTRA EREGL ESCAR ESEN EUPWR EYGYO FADE FENER FFKRL FROTO
-GARAN GEDIK GEDZA GENIL GENTS GEREL GESAN GLBMD GLCVY GLRYH GLYHO GOKNR
-GOLTS GOODY GOZDE GRSEL GRTHO GSDDE GSDHO GSRAY GUBRF GWIND HALKB HATEK
-HATSN HDFGS HEDEF HEKTS HKTM HLAS HLGYO HOROZ HUBVC HUNER HURGZ ICBCT IDGYO
-IEYHO IHAAS IHEVA IHGZT IHLAS IHLGM IHYAY IMASM INDES INFO INGRM INTEM
-INVEO ISCTR ISDMR ISFIN ISGSY ISGYO ISKPL ISMEN ISONE ISSEN ISYAT ITTFH
-IZENR IZFAS IZMDC JANTS KAPLM KAREL KARSN KARTN KARYE KATMR KAYSE KCAER
-KCHOL KENT KERVT KFEIN KLGYO KLKIM KLRHO KLSER KLYPV KMPUR KNFRT KONKA
-KONTR KONYA KOPOL KORDS KOZAA KOZAL KRDMA KRDMB KRDMD KRGYO KRONT KRVGD
-KSTUR KTLEV KTSKR KUTPO KUYAS LIDER LINK LKMNH LOGO LOKMAN LRSHO LUKSK
-MAALT MACKO MAGEN MAKIM MAKTK MANAS MARBL MARKA MARTI MAVI MEDTR MEGMT
-MEPET MERCN MERIT MERKO METRO MGROS MHRGY MIATK MIPAZ MMCAS MNDRS MOBTL
-MOGAN MPARK MRSHL MTRKS MZHLD NATEN NETAS NTGAZ NTHOL NUGYO NUHCM OBAMS
-ODAS ODINE OBASE OFSYM ONCSM ORGE ORMA OSMEN OSTIM OTKAR OYAKC OYAYD OYLUM
-OZATD OZKGY PAGYO PAPIL PARSN PASEU PENTA PETKM PETUN PGSUS PINSU PKART
-PKENT PLTUR PNSUT POLHO POLTK PRDGS PRKAB PRKME PRZMA PSDTC QNBFL QNBTR
-QUAGR RALYH RAYSG REEDR RNPOL ROYAL RYGYO RYSAS SAFKR SAHOL SAMAT SANEL
-SANKO SASA SAYAS SDTTR SEGMN SEGYO SEKFK SEKUR SELVA SENTE SERCY SERVE
-SISE SKBNK SKTAS SKYMD SMART SMRTG SNGYO SNICA SNKRN SOKM SOKE SONME
-SRVGY SUMAS SUNTK SUWEN TARKM TATEN TATGD TAVHL TBORG TCELL TDGYO TEKTU
-TERA TETMT TEZOL TGSAS THYAO TKFEN TKNSA TLMAN TMSN TNZTP TOASO TRCAS
-TRGYO TRILC TSKB TSPOR TTRAK TUCLK TUKAS TUPRS TURGG TURSG UCAK ULUFA
-ULUSE ULKER ULUUN UNLU USAK UZERB VAKBN VAKFN VAKKO VANGD VBTYZ VERUS
-VESBE VESTL VKGYO VKING YAPRK YATAS YAYLA YBTAS YEOTK YESIL YGGYO YIGIT
-YKBNK YKSLN YONGA YUNSA YYAPI ZEDUR ZOREN
-""".split()
+FALLBACK_BIST = """ AEFES AKBNK AKENR AKFGY AKFYE AKGRT AKMGY AKSA AKSEN AKSGY ALARK ALBRK ALCTL ALFAS ALGYO ALKA ALKIM ALKLC ALTNY ANELE ANHYT ANSGR ARCLK ARENA ARZUM ASELS ASGYO ASUZU ATAGY ATAKP ATATP ATEKS ATLAS AVHOL AVOD AYDEM AYEN BAKAB BALAT BANVT BARMA BASGZ BAYRK BEGYO BEYAZ BFREN BIGEN BIMAS BINBN BIZIM BJKAS BLCYT BMSCH BMSTL BNTAS BOBET BORLS BORSK BOSSA BRISA BRKO BRKSN BRKVY BRLSM BRSAN BRYAT BSOKE BTCIM BUCIM BURCE BURVA BVSAN CANTE CCOLA CELHA CEMAS CEMTS CEOEM CIMSA CLEBI CMBTN CONSE COSMO CUSAN CVKMD CWENE DAGHL DAGI DAPGM DARDL DCTTR DENGE DERHL DERIM DESA DESPC DEVA DGATE DGGYO DGNMO DITAS DMRGD DOAS DOBUR DOCO DOHOL DOKTA DURDO DYOBY ECILC ECZYT EDATA EGEEN EGGUB EKGYO EKSUN ELITE EMKEL ENERY ENJSA ENKAI ENSRI ENTRA EREGL ESCAR ESEN EUPWR EYGYO FADE FENER FFKRL FROTO GARAN GEDIK GEDZA GENIL GENTS GEREL GESAN GLBMD GLCVY GLRYH GLYHO GOKNR GOLTS GOODY GOZDE GRSEL GRTHO GSDDE GSDHO GSRAY GUBRF GWIND HALKB HATEK HATSN HDFGS HEDEF HEKTS HKTM HLAS HLGYO HOROZ HUBVC HUNER HURGZ ICBCT IDGYO IEYHO IHAAS IHEVA IHGZT IHLAS IHLGM IHYAY IMASM INDES INFO INGRM INTEM INVEO ISCTR ISDMR ISFIN ISGSY ISGYO ISKPL ISMEN ISONE ISSEN ISYAT ITTFH IZENR IZFAS IZMDC JANTS KAPLM KAREL KARSN KARTN KARYE KATMR KAYSE KCAER KCHOL KENT KERVT KFEIN KLGYO KLKIM KLRHO KLSER KLYPV KMPUR KNFRT KONKA KONTR KONYA KOPOL KORDS KOZAA KOZAL KRDMA KRDMB KRDMD KRGYO KRONT KRVGD KSTUR KTLEV KTSKR KUTPO KUYAS LIDER LINK LKMNH LOGO LOKMAN LRSHO LUKSK MAALT MACKO MAGEN MAKIM MAKTK MANAS MARBL MARKA MARTI MAVI MEDTR MEGMT MEPET MERCN MERIT MERKO METRO MGROS MHRGY MIATK MIPAZ MMCAS MNDRS MOBTL MOGAN MPARK MRSHL MTRKS MZHLD NATEN NETAS NTGAZ NTHOL NUGYO NUHCM OBAMS ODAS ODINE OBASE OFSYM ONCSM ORGE ORMA OSMEN OSTIM OTKAR OYAKC OYAYD OYLUM OZATD OZKGY PAGYO PAPIL PARSN PASEU PENTA PETKM PETUN PGSUS PINSU PKART PKENT PLTUR PNSUT POLHO POLTK PRDGS PRKAB PRKME PRZMA PSDTC QNBFL QNBTR QUAGR RALYH RAYSG REEDR RNPOL ROYAL RYGYO RYSAS SAFKR SAHOL SAMAT SANEL SANKO SASA SAYAS SDTTR SEGMN SEGYO SEKFK SEKUR SELVA SENTE SERCY SERVE SISE SKBNK SKTAS SKYMD SMART SMRTG SNGYO SNICA SNKRN SOKM SOKE SONME SRVGY SUMAS SUNTK SUWEN TARKM TATEN TATGD TAVHL TBORG TCELL TDGYO TEKTU TERA TETMT TEZOL TGSAS THYAO TKFEN TKNSA TLMAN TMSN TNZTP TOASO TRCAS TRGYO TRILC TSKB TSPOR TTRAK TUCLK TUKAS TUPRS TURGG TURSG UCAK ULUFA ULUSE ULKER ULUUN UNLU USAK UZERB VAKBN VAKFN VAKKO VANGD VBTYZ VERUS VESBE VESTL VKGYO VKING YAPRK YATAS YAYLA YBTAS YEOTK YESIL YGGYO YIGIT YKBNK YKSLN YONGA YUNSA YYAPI ZEDUR ZOREN """.split()
 
 FALLBACK_BIST = sorted(set(x.strip().upper() for x in FALLBACK_BIST if x.strip()))
 
@@ -107,11 +48,7 @@ def normalize_symbol(s):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_dynamic_bist_universe():
-    """
-    Öncelik:
-    1) TradingView Turkey scanner üzerinden güncel semboller.
-    2) Geniş gömülü BIST yedek listesi.
-    """
+    """ Öncelik: 1) TradingView Turkey scanner üzerinden güncel semboller. 2) Geniş gömülü BIST yedek listesi. """
     try:
         payload = {
             "filter": [
@@ -152,48 +89,16 @@ def get_dynamic_bist_universe():
 # ============================================================
 
 class DB:
-    @staticmethod
+@staticmethod
     def init():
         con = sqlite3.connect(DB_FILE)
         cur = con.cursor()
 
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS portfolio_nav (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT,
-            cash REAL,
-            nav REAL,
-            open_positions INTEGER
-        )
-        """)
+        cur.execute(""" CREATE TABLE IF NOT EXISTS portfolio_nav ( id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, cash REAL, nav REAL, open_positions INTEGER ) """)
 
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS positions (
-            symbol TEXT PRIMARY KEY,
-            entry_date TEXT,
-            entry_price REAL,
-            shares INTEGER,
-            stop_loss REAL,
-            tp1 REAL,
-            tp2 REAL,
-            score REAL
-        )
-        """)
+        cur.execute(""" CREATE TABLE IF NOT EXISTS positions ( symbol TEXT PRIMARY KEY, entry_date TEXT, entry_price REAL, shares INTEGER, stop_loss REAL, tp1 REAL, tp2 REAL, score REAL ) """)
 
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol TEXT,
-            entry_date TEXT,
-            exit_date TEXT,
-            entry_price REAL,
-            exit_price REAL,
-            shares INTEGER,
-            pnl REAL,
-            pnl_pct REAL,
-            reason TEXT
-        )
-        """)
+        cur.execute(""" CREATE TABLE IF NOT EXISTS trades ( id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, entry_date TEXT, exit_date TEXT, entry_price REAL, exit_price REAL, shares INTEGER, pnl REAL, pnl_pct REAL, reason TEXT ) """)
 
         cur.execute("SELECT COUNT(*) FROM portfolio_nav")
         if cur.fetchone()[0] == 0:
@@ -205,7 +110,7 @@ class DB:
         con.commit()
         con.close()
 
-    @staticmethod
+@staticmethod
     def cash():
         con = sqlite3.connect(DB_FILE)
         row = con.execute(
@@ -214,7 +119,7 @@ class DB:
         con.close()
         return float(row[0]) if row else 100000.0
 
-    @staticmethod
+@staticmethod
     def positions():
         con = sqlite3.connect(DB_FILE)
         df = pd.read_sql_query("SELECT * FROM positions", con)
@@ -226,10 +131,7 @@ class DB:
 # ============================================================
 
 def normalize_ohlcv(df):
-    """
-    yfinance bazen MultiIndex döndürür.
-    Close/High/Low/Volume kolonlarını güvenli biçimde düzleştirir.
-    """
+    """ yfinance bazen MultiIndex döndürür. Close/High/Low/Volume kolonlarını güvenli biçimde düzleştirir. """
     if df is None or df.empty:
         return None
 
@@ -766,6 +668,35 @@ def backtest(df, capital=100000, risk_pct=2):
 # UI
 # ============================================================
 
+
+def build_4h_from_1h(hourly_df):
+    """1H Yahoo verisini 4H barlara dönüştürür."""
+    if hourly_df is None or hourly_df.empty:
+        return pd.DataFrame()
+    df = hourly_df.copy()
+    try:
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index)
+        return df.resample("4h", origin="start_day").agg({
+            "Open": "first",
+            "High": "max",
+            "Low": "min",
+            "Close": "last",
+            "Volume": "sum"
+        }).dropna()
+    except Exception:
+        return pd.DataFrame()
+
+def mtf_4h_ema_filter(hourly_raw, symbol):
+    """4H EMA20 > EMA50 zorunlu filtresi."""
+    h1 = normalize_yf_frame(hourly_raw, symbol)
+    h4 = build_4h_from_1h(h1)
+    if len(h4) < 55:
+        return False
+    e20 = h4["Close"].ewm(span=20, adjust=False).mean().iloc[-1]
+    e50 = h4["Close"].ewm(span=50, adjust=False).mean().iloc[-1]
+    return bool(e20 > e50)
+
 def main():
     DB.init()
 
@@ -877,43 +808,7 @@ def main():
                 cls = "q-bad"
 
             st.markdown(
-                f"""
-                <div class="q-card">
-                    <div style="display:flex;justify-content:space-between;
-                                align-items:center;">
-                        <div>
-                            <div class="q-title" style="font-size:1.25rem;">
-                                {item['symbol']}
-                            </div>
-                            <div class="q-muted">
-                                Fiyat: {item['price']:.2f} TL
-                                &nbsp; | &nbsp;
-                                RSI: {item['rsi']:.1f}
-                                &nbsp; | &nbsp;
-                                ADX: {item['adx']:.1f}
-                                &nbsp; | &nbsp;
-                                RVOL: {item['rvol']:.2f}x
-                            </div>
-                        </div>
-
-                        <div class="q-score {cls}">
-                            {item['signal']} — {score:.1f}/100
-                        </div>
-                    </div>
-
-                    <hr style="border-color:#334155">
-
-                    <div style="display:flex;justify-content:space-between;
-                                color:#CBD5E1;">
-                        <span>📊 POC: {item['poc']:.2f}</span>
-                        <span>4H EMA20: {item['ema20_4h']:.2f}</span>
-                        <span>4H EMA50: {item['ema50_4h']:.2f}</span>
-                        <span>🎯 TP1: {item['tp1']:.2f}</span>
-                        <span>🎯 TP2: {item['tp2']:.2f}</span>
-                        <span>🛑 Stop: {item['stop']:.2f}</span>
-                    </div>
-                </div>
-                """,
+                f""" <div class="q-card"> <div style="display:flex;justify-content:space-between; align-items:center;"> <div> <div class="q-title" style="font-size:1.25rem;"> {item['symbol']} </div> <div class="q-muted"> Fiyat: {item['price']:.2f} TL &nbsp; | &nbsp; RSI: {item['rsi']:.1f} &nbsp; | &nbsp; ADX: {item['adx']:.1f} &nbsp; | &nbsp; RVOL: {item['rvol']:.2f}x </div> </div> <div class="q-score {cls}"> {item['signal']} — {score:.1f}/100 </div> </div> <hr style="border-color:#334155"> <div style="display:flex;justify-content:space-between; color:#CBD5E1;"> <span>📊 POC: {item['poc']:.2f}</span> <span>4H EMA20: {item['ema20_4h']:.2f}</span> <span>4H EMA50: {item['ema50_4h']:.2f}</span> <span>🎯 TP1: {item['tp1']:.2f}</span> <span>🎯 TP2: {item['tp2']:.2f}</span> <span>🛑 Stop: {item['stop']:.2f}</span> </div> </div> """,
                 unsafe_allow_html=True
             )
 
@@ -994,4 +889,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
