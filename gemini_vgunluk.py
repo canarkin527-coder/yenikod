@@ -313,19 +313,40 @@ def attach_relative_strength(df, benchmark_close):
     return df
 
 
+def _strip_tz(idx):
+    """DatetimeIndex'ten saat dilimini kaldırır (intraday veri tz-aware gelebilir)."""
+    try:
+        if getattr(idx, "tz", None) is not None:
+            return idx.tz_localize(None)
+    except Exception:
+        pass
+    return idx
+
+
 def attach_mtf(df_daily, df_4h):
-    """4H trend (Close>EMA20 ve EMA20 yükseliyor) -> günlük indekse hizala + shift (look-ahead yok)."""
-    if df_4h is None:
+    """4H trend (Close>EMA20 ve EMA20 yükseliyor) -> günlük indekse hizala + shift (look-ahead yok).
+       yfinance intraday verisi tz-aware, günlük veri tz-naive gelir; ikisini de tz-naive'e indiririz."""
+    if df_4h is None or df_4h.empty:
         df_daily["MTF_Bull"] = 0
         return df_daily
-    d4 = df_4h.copy()
-    d4["EMA20"] = d4["Close"].ewm(span=20, adjust=False).mean()
-    bull4 = ((d4["Close"] > d4["EMA20"]) & (d4["EMA20"] > d4["EMA20"].shift(1))).astype(int)
-    # 4H durumunu gün sonuna indir, sonra 1 gün kaydır (o günün intraday'ini kullanma)
-    daily_state = bull4.resample("1D").last().ffill()
-    aligned = daily_state.reindex(df_daily.index.normalize(), method="ffill")
-    aligned.index = df_daily.index
-    df_daily["MTF_Bull"] = aligned.shift(1).fillna(0).astype(int)
+    try:
+        d4 = df_4h.copy()
+        d4.index = _strip_tz(d4.index)                     # 4H saat dilimini kaldır
+        d4["EMA20"] = d4["Close"].ewm(span=20, adjust=False).mean()
+        bull4 = ((d4["Close"] > d4["EMA20"]) & (d4["EMA20"] > d4["EMA20"].shift(1))).astype(int)
+
+        # 4H durumunu gün sonuna indir -> normalize -> 1 gün kaydır (o günün intraday'ini kullanma)
+        daily_state = bull4.resample("1D").last().ffill()
+        daily_state.index = daily_state.index.normalize()
+        daily_state = daily_state.shift(1)
+
+        # günlük df indeksini de tz-naive normalized tarihe çevir ve pozisyonel hizala
+        key = _strip_tz(df_daily.index).normalize()
+        mapped = daily_state.reindex(key, method="ffill")
+        df_daily["MTF_Bull"] = mapped.fillna(0).astype(int).values
+    except Exception:
+        # herhangi bir hizalama sorununda MTF'i nötr bırak (sinyali bozmasın)
+        df_daily["MTF_Bull"] = 0
     return df_daily
 
 
