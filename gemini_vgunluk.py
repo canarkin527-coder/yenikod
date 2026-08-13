@@ -380,32 +380,32 @@ def build_features(df, benchmark_close, df_4h):
     return d
 
 
-def score_row(row, regime_val=1):
-    """
-    TEK KAYNAK SKORLAMA. Bir indikatör satırından (Series/dict) 0-100 skor üretir.
-    5 ortogonal blok. regime_val: -1/0/1 (endeks rejimi).
-    Döner: (score, breakdown_dict)
-    """
+# --- Faktör tanımları (her blok kendi maksimum ham puanına göre [0,1]'e normalize edilir) ---
+FACTORS = ["Trend", "Momentum", "Flow", "RS", "Structure"]
+FACTOR_MAX = {"Trend": 25.0, "Momentum": 20.0, "Flow": 20.0, "RS": 20.0, "Structure": 15.0}
+# Kalibrasyon yapılmazsa kullanılacak varsayılan ağırlıklar (toplam 1.0)
+DEFAULT_WEIGHTS = {"Trend": 0.25, "Momentum": 0.20, "Flow": 0.20, "RS": 0.20, "Structure": 0.15}
+
+
+def factor_points(row):
+    """Her faktör bloğunun HAM puanını üretir (blok maksimumları: 25/20/20/20/15)."""
     def g(k):
-        v = row[k]
         try:
-            return float(v)
+            return float(row[k])
         except Exception:
             return np.nan
 
     c = g("Close")
-    bd = {}
 
-    # ---------- 1) TREND & YÖN (25) ----------
+    # 1) TREND & YÖN (max 25)
     t = 0.0
     if c > g("EMA_200"): t += 8.0
     if g("EMA_50") > g("EMA_200"): t += 7.0
     if g("EMA_9") > g("EMA_20") > g("EMA_50"): t += 6.0
     elif g("EMA_20") > g("EMA_50"): t += 3.0
     if g("Supertrend_Dir") == 1: t += 4.0
-    bd["Trend"] = t
 
-    # ---------- 2) MOMENTUM (20) ----------
+    # 2) MOMENTUM (max 20)
     m = 0.0
     adx = g("ADX")
     if adx >= 25: m += 8.0
@@ -415,9 +415,8 @@ def score_row(row, regime_val=1):
     rsi = g("RSI")
     if 50 <= rsi <= 65: m += 5.0
     elif (45 <= rsi < 50) or (65 < rsi <= 72): m += 2.0
-    bd["Momentum"] = m
 
-    # ---------- 3) HACİM / PARA AKIŞI (20) ----------
+    # 3) HACİM / PARA AKIŞI (max 20)
     fl = 0.0
     rvol = g("RVOL")
     if rvol >= 1.5: fl += 8.0
@@ -425,9 +424,8 @@ def score_row(row, regime_val=1):
     elif rvol >= 0.8: fl += 2.0
     if g("OBV") > g("OBV_EMA"): fl += 7.0
     if g("OBV_Rising") == 1: fl += 5.0
-    bd["Flow"] = fl
 
-    # ---------- 4) GÖRECELİ GÜÇ RS (20) — bağımsız, öngörü gücü yüksek ----------
+    # 4) GÖRECELİ GÜÇ RS (max 20)
     rs = 0.0
     rs20, rs60 = g("RS_20"), g("RS_60")
     if not np.isnan(rs20):
@@ -437,24 +435,60 @@ def score_row(row, regime_val=1):
         if rs60 > 5.0: rs += 7.0
         elif rs60 > 0.0: rs += 3.0
     if not np.isnan(rs20) and not np.isnan(rs60) and rs20 > rs60: rs += 5.0
-    bd["RS"] = rs
 
-    # ---------- 5) YAPI & ÇOK ZAMAN DİLİMİ (15) ----------
+    # 5) YAPI & ÇOK ZAMAN DİLİMİ (max 15)
     stc = 0.0
     if g("MTF_Bull") == 1: stc += 6.0
     if g("BOS") == 1 or g("FVG") == 1: stc += 5.0
     if c > g("POC"): stc += 4.0
-    bd["Structure"] = stc
 
-    score = t + m + fl + rs + stc
+    return {"Trend": t, "Momentum": m, "Flow": fl, "RS": rs, "Structure": stc}
 
-    # ---------- REJİM MODİFİKATÖRÜ ----------
+
+def components_from_points(points):
+    """Ham puanları [0,1] aralığına normalize eder (blok maksimumuna göre)."""
+    return {f: points[f] / FACTOR_MAX[f] for f in FACTORS}
+
+
+def score_from_components(comp, weights, regime_val=1):
+    """Ağırlıklı bileşenlerden 0-100 skor. weights toplamı 1 varsayılır."""
+    s = 100.0 * sum(weights.get(f, 0.0) * comp.get(f, 0.0) for f in FACTORS)
     if regime_val == -1:
-        score *= CFG.REGIME_PENALTY
-    bd["_regime"] = regime_val
-    bd["_raw"] = t + m + fl + rs + stc
+        s *= CFG.REGIME_PENALTY
+    return s
 
+
+def score_row(row, regime_val=1, weights=None):
+    """
+    TEK KAYNAK SKORLAMA. Tarayıcı VE backtest bunu kullanır.
+    weights=None -> DEFAULT_WEIGHTS; kalibre edilmiş ağırlıklar geçilebilir.
+    Döner: (score, breakdown_dict)
+    """
+    weights = DEFAULT_WEIGHTS if weights is None else weights
+    pts = factor_points(row)
+    comp = components_from_points(pts)
+    score = score_from_components(comp, weights, regime_val)
+    bd = dict(pts)
+    bd["_regime"] = regime_val
+    bd["_comp"] = comp
     return round(score, 1), bd
+
+
+def compute_components_df(feat):
+    """Her bar için 5 faktör bileşenini ([0,1]) TEK SEFERDE üretir.
+       Panel/IC ve walk-forward buradan okur; folddan folda yeniden hesaplanmaz."""
+    if feat is None or feat.empty:
+        return None
+    recs = [components_from_points(factor_points(feat.iloc[i])) for i in range(len(feat))]
+    comp_df = pd.DataFrame(recs, index=feat.index)
+    return comp_df
+
+
+def grade_of(score):
+    if score >= CFG.GRADE_A_PLUS: return "A+"
+    if score >= CFG.GRADE_A: return "A"
+    if score >= CFG.GRADE_B_PLUS: return "B+"
+    return "WATCH"
 
 
 def grade_of(score):
@@ -498,7 +532,7 @@ def build_trade_plan(row):
 # EVALUATION (tarayıcı) — hard veto + tek kaynak skor
 # ==============================================================================
 
-def evaluate_symbol(symbol, feat_df, regime_series):
+def evaluate_symbol(symbol, feat_df, regime_series, weights=None):
     if feat_df is None or len(feat_df) < CFG.MIN_BARS:
         return None, "VETO: Yetersiz Veri"
 
@@ -530,8 +564,8 @@ def evaluate_symbol(symbol, feat_df, regime_series):
     if CFG.REGIME_HARD_BLOCK and regime_val == -1:
         return None, "VETO: Ayı Rejimi"
 
-    # --- SKOR (tek kaynak) ---
-    score, bd = score_row(row, regime_val)
+    # --- SKOR (tek kaynak, kalibre ağırlıklar opsiyonel) ---
+    score, bd = score_row(row, regime_val, weights)
     grade = grade_of(score)
 
     res = {
@@ -555,79 +589,239 @@ def evaluate_symbol(symbol, feat_df, regime_series):
 # BACKTEST — AYNI score_row() + gerçekçi maliyet/look-ahead
 # ==============================================================================
 
-def run_backtest(data_map, benchmark_close, benchmark_df_4h_map=None,
-                 min_score=None, regime_series=None):
-    min_score = CFG.SIGNAL_MIN if min_score is None else min_score
-    trades = []
+def _weights_vec(weights):
+    return np.array([weights.get(f, 0.0) for f in FACTORS], dtype=float)
 
+
+def simulate_symbol(sym, feat, comp_matrix, reg_arr, weights_vec, min_score,
+                    entry_lo=None, entry_hi=None):
+    """Tek sembol için işlem simülasyonu. comp_matrix önceden hesaplanmış
+       bileşenler (n x 5). Skor = 100 * (bileşen . ağırlık) — folddan folda
+       yeniden puanlama yapılmaz. entry_lo/hi: pozisyon yalnızca bu tarih
+       aralığında AÇILABİLİR (walk-forward out-of-sample penceresi)."""
+    trades = []
+    idx = feat.index
+    open_arr = feat["Open"].values
+    high_arr = feat["High"].values
+    low_arr = feat["Low"].values
+    close_arr = feat["Close"].values
+    ema20_arr = feat["EMA_20"].values
+    atr_arr = feat["ATR"].values
+    liq_arr = feat["LiqTL"].values
+
+    in_pos = False
+    entry_px = stop = tp = 0.0
+    entry_i = entry_date = None
+
+    for i in range(CFG.MIN_BARS, len(feat) - 1):
+        if not in_pos:
+            d = idx[i]
+            if entry_lo is not None and (d < entry_lo or d > entry_hi):
+                continue
+            regime_val = int(reg_arr[i])
+            if CFG.REGIME_HARD_BLOCK and regime_val == -1:
+                continue
+            atr = atr_arr[i]
+            if np.isnan(atr) or atr <= 0:
+                continue
+            if liq_arr[i] < CFG.MIN_LIQUIDITY_TL:
+                continue
+            if abs(close_arr[i] - ema20_arr[i]) > CFG.MAX_EXTENSION_ATR * atr:
+                continue
+            stp, tgt, rr, risk = build_trade_plan(feat.iloc[i])
+            if risk <= 0 or rr < CFG.MIN_RR:
+                continue
+
+            # HIZLI SKOR: bileşen . ağırlık (tek kaynak matematiğiyle aynı)
+            score = 100.0 * float(np.dot(comp_matrix[i], weights_vec))
+            if regime_val == -1:
+                score *= CFG.REGIME_PENALTY
+            if score >= min_score:
+                entry_px = open_arr[i + 1] * (1 + CFG.SLIPPAGE_PCT)
+                stop, tp = stp, tgt
+                entry_i, entry_date = i + 1, idx[i + 1]
+                in_pos = True
+        else:
+            hi, lo = high_arr[i], low_arr[i]
+            exit_px = None; reason = None
+            if lo <= stop:
+                exit_px, reason = stop * (1 - CFG.SLIPPAGE_PCT), "STOP"
+            elif hi >= tp:
+                exit_px, reason = tp * (1 - CFG.SLIPPAGE_PCT), "TARGET"
+            elif CFG.MAX_HOLD_BARS and (i - entry_i) >= CFG.MAX_HOLD_BARS:
+                exit_px, reason = close_arr[i] * (1 - CFG.SLIPPAGE_PCT), "TIME"
+
+            if exit_px is not None:
+                net = (exit_px / entry_px - 1.0) - 2 * CFG.COMMISSION_PCT
+                trades.append({
+                    "Symbol": sym, "Entry": entry_date, "Exit": idx[i],
+                    "Bars": i - entry_i, "PnL_Pct": round(net * 100, 2),
+                    "Reason": reason
+                })
+                in_pos = False
+    return trades
+
+
+def prepare_feature_maps(data_map, benchmark_close, regime_series, df4_map=None):
+    """Her sembol için feat + bileşen matrisi + rejim dizisini TEK SEFERDE hazırlar."""
+    feat_map, comp_map, reg_map = {}, {}, {}
     for sym, df in data_map.items():
-        # 4H yoksa MTF nötr; backtest hızlı kalsın diye 4H opsiyonel
-        df4 = benchmark_df_4h_map.get(sym) if benchmark_df_4h_map else None
+        df4 = df4_map.get(sym) if df4_map else None
         feat = build_features(df, benchmark_close, df4)
         if feat is None or len(feat) < CFG.MIN_BARS:
             continue
-
-        # rejim hizalı
+        comp_df = compute_components_df(feat)
+        if comp_df is None:
+            continue
+        feat_map[sym] = feat
+        comp_map[sym] = comp_df[FACTORS].values
         if regime_series is not None:
-            reg_aligned = regime_series.reindex(feat.index, method="ffill").fillna(1)
+            reg_map[sym] = regime_series.reindex(feat.index, method="ffill").fillna(1).values
         else:
-            reg_aligned = pd.Series(1, index=feat.index)
+            reg_map[sym] = np.ones(len(feat))
+    return feat_map, comp_map, reg_map
 
-        in_pos = False
-        entry_px = stop = tp = 0.0
-        entry_i = entry_date = None
-        open_arr = feat["Open"].values
-        high_arr = feat["High"].values
-        low_arr = feat["Low"].values
 
-        for i in range(CFG.MIN_BARS, len(feat) - 1):  # -1: girişi i+1 açılışında
-            row = feat.iloc[i]
+def run_backtest(data_map, benchmark_close, benchmark_df_4h_map=None,
+                 min_score=None, regime_series=None, weights=None):
+    """Tek pencere backtest (varsayılan veya verilen ağırlıklarla)."""
+    min_score = CFG.SIGNAL_MIN if min_score is None else min_score
+    weights = DEFAULT_WEIGHTS if weights is None else weights
+    wv = _weights_vec(weights)
+    feat_map, comp_map, reg_map = prepare_feature_maps(
+        data_map, benchmark_close, regime_series, benchmark_df_4h_map)
 
-            if not in_pos:
-                regime_val = int(reg_aligned.iloc[i])
-                if CFG.REGIME_HARD_BLOCK and regime_val == -1:
-                    continue
-                # hard veto (backtest'te de aynı mantık)
-                atr = float(row["ATR"])
-                if pd.isna(atr) or atr <= 0:
-                    continue
-                if float(row["LiqTL"]) < CFG.MIN_LIQUIDITY_TL:
-                    continue
-                if abs(float(row["Close"]) - float(row["EMA_20"])) > CFG.MAX_EXTENSION_ATR * atr:
-                    continue
-                stp, tgt, rr, risk = build_trade_plan(row)
-                if risk <= 0 or rr < CFG.MIN_RR:
-                    continue
-
-                score, _ = score_row(row, regime_val)
-                if score >= min_score:
-                    # GİRİŞ: bir sonraki bar AÇILIŞ (look-ahead yok) + slipaj
-                    entry_px = open_arr[i + 1] * (1 + CFG.SLIPPAGE_PCT)
-                    stop, tp = stp, tgt
-                    entry_i, entry_date = i + 1, feat.index[i + 1]
-                    in_pos = True
-            else:
-                hi, lo = high_arr[i], low_arr[i]
-                exit_px = None; reason = None
-                # aynı barda ikisi de tetiklenirse KÖTÜMSER: stop öncelikli
-                if lo <= stop:
-                    exit_px, reason = stop * (1 - CFG.SLIPPAGE_PCT), "STOP"
-                elif hi >= tp:
-                    exit_px, reason = tp * (1 - CFG.SLIPPAGE_PCT), "TARGET"
-                elif CFG.MAX_HOLD_BARS and (i - entry_i) >= CFG.MAX_HOLD_BARS:
-                    exit_px, reason = feat["Close"].iloc[i] * (1 - CFG.SLIPPAGE_PCT), "TIME"
-
-                if exit_px is not None:
-                    gross = exit_px / entry_px - 1.0
-                    net = gross - 2 * CFG.COMMISSION_PCT  # giriş+çıkış komisyonu
-                    trades.append({
-                        "Symbol": sym, "Entry": entry_date, "Exit": feat.index[i],
-                        "Bars": i - entry_i, "PnL_Pct": round(net * 100, 2),
-                        "Reason": reason
-                    })
-                    in_pos = False
-
+    trades = []
+    for sym, feat in feat_map.items():
+        trades += simulate_symbol(sym, feat, comp_map[sym], reg_map[sym], wv, min_score)
     return pd.DataFrame(trades)
+
+
+# ------------------------------------------------------------------------------
+# IC (INFORMATION COEFFICIENT) KALİBRASYONU
+# ------------------------------------------------------------------------------
+
+def build_panel(feat_map, comp_map, horizon=20):
+    """Panel veri: her (tarih, sembol) için 5 bileşen + ileriye dönük getiri.
+       IC kalibrasyonu bu paneli kullanır."""
+    recs = []
+    for sym, feat in feat_map.items():
+        comp = comp_map[sym]
+        closes = feat["Close"].values
+        idx = feat.index
+        n = len(feat)
+        for i in range(CFG.MIN_BARS, n - horizon):
+            fwd = closes[i + horizon] / closes[i] - 1.0
+            if not np.isfinite(fwd):
+                continue
+            rec = {"date": idx[i], "symbol": sym, "fwd_ret": fwd}
+            for j, f in enumerate(FACTORS):
+                rec[f] = comp[i, j]
+            recs.append(rec)
+    return pd.DataFrame(recs)
+
+
+def _spearman(a, b):
+    """scipy'siz Spearman: sıralamalar üzerinde Pearson."""
+    ra = pd.Series(a).rank()
+    rb = pd.Series(b).rank()
+    return ra.corr(rb)
+
+
+def compute_ic_weights(panel):
+    """Her faktör için kesitsel IC (her tarihte semboller arası sıra korelasyonu,
+       zaman ortalaması). Ağırlıklar pozitif IC'lerden türetilir (toplam 1).
+       Tahmin gücü olmayan/negatif faktör 0 ağırlık alır."""
+    if panel is None or panel.empty:
+        return dict(DEFAULT_WEIGHTS), {f: 0.0 for f in FACTORS}, 0
+    ics = {}
+    for f in FACTORS:
+        per_date = []
+        for _, grp in panel.groupby("date"):
+            if len(grp) < 5 or grp[f].nunique() < 3 or grp["fwd_ret"].nunique() < 3:
+                continue
+            ic = _spearman(grp[f].values, grp["fwd_ret"].values)
+            if pd.notna(ic):
+                per_date.append(ic)
+        ics[f] = float(np.mean(per_date)) if per_date else 0.0
+
+    pos = {f: max(ics[f], 0.0) for f in FACTORS}
+    s = sum(pos.values())
+    if s <= 1e-9:
+        weights = dict(DEFAULT_WEIGHTS)   # hiçbir faktör pozitif değilse varsayılana dön
+    else:
+        weights = {f: pos[f] / s for f in FACTORS}
+    return weights, ics, len(panel)
+
+
+# ------------------------------------------------------------------------------
+# WALK-FORWARD VALIDASYON (in-sample kalibrasyon -> out-of-sample test)
+# ------------------------------------------------------------------------------
+
+def walk_forward_backtest(data_map, benchmark_close, regime_series,
+                          df4_map=None, n_folds=4, horizon=20,
+                          initial_train_frac=0.40, min_score=None):
+    """Zamanı fold'lara böler. Her fold için: ağırlıkları YALNIZCA o fold'dan
+       ÖNCEKI veriyle kalibre eder (IC), sonra fold penceresinde OUT-OF-SAMPLE
+       işlem simüle eder. Böylece sonuçlar overfitting'den arındırılmış olur."""
+    min_score = CFG.SIGNAL_MIN if min_score is None else min_score
+    feat_map, comp_map, reg_map = prepare_feature_maps(
+        data_map, benchmark_close, regime_series, df4_map)
+    if not feat_map:
+        return pd.DataFrame(), []
+
+    # Global tarih ekseni — ısınma dönemini (MIN_BARS) atla ki eğitim/test
+    # yalnızca skorlanabilir barlardan gelsin (ilk fold da eğitim verisi bulsun).
+    all_dates = sorted(set().union(*[set(f.index) for f in feat_map.values()]))
+    all_dates = pd.DatetimeIndex(all_dates)
+    if len(all_dates) < CFG.MIN_BARS + 250:
+        return pd.DataFrame(), []
+    usable = all_dates[CFG.MIN_BARS:]
+
+    n = len(usable)
+    start_idx = int(n * initial_train_frac)
+    test_span = n - start_idx
+    fold_len = max(1, test_span // n_folds)
+    buffer = pd.Timedelta(days=int(horizon * 1.6))  # fwd-getiri sızıntısını engelle
+
+    # Panel bir kez oluşturulur; her fold yalnızca tarih filtresi uygular
+    panel = build_panel(feat_map, comp_map, horizon=horizon)
+
+    all_oos_trades = []
+    fold_reports = []
+
+    for k in range(n_folds):
+        t0 = start_idx + k * fold_len
+        t1 = start_idx + (k + 1) * fold_len if k < n_folds - 1 else n - 1
+        test_start = usable[t0]
+        test_end = usable[t1]
+        train_cutoff = test_start - buffer   # eğitim verisi buraya kadar (sızıntısız)
+
+        # --- IN-SAMPLE KALİBRASYON (train_cutoff'tan önceki panel) ---
+        train_panel = panel[panel["date"] < train_cutoff]
+        weights, ics, n_obs = compute_ic_weights(train_panel)
+        wv = _weights_vec(weights)
+
+        # --- OUT-OF-SAMPLE İŞLEM (yalnızca test penceresinde giriş) ---
+        fold_trades = []
+        for sym, feat in feat_map.items():
+            fold_trades += simulate_symbol(
+                sym, feat, comp_map[sym], reg_map[sym], wv, min_score,
+                entry_lo=test_start, entry_hi=test_end)
+        for tr in fold_trades:
+            tr["Fold"] = k + 1
+        all_oos_trades += fold_trades
+
+        rep = {"Fold": k + 1,
+               "Test Start": test_start.date().isoformat(),
+               "Test End": test_end.date().isoformat(),
+               "Train Obs": n_obs, "OOS Trades": len(fold_trades)}
+        for f in FACTORS:
+            rep[f + " IC"] = round(ics[f], 3)
+            rep[f + " W%"] = round(weights[f] * 100, 1)
+        fold_reports.append(rep)
+
+    return pd.DataFrame(all_oos_trades), fold_reports
 
 
 def backtest_metrics(trades_df):
@@ -778,7 +972,8 @@ border-radius:12px;padding:16px;margin-bottom:12px;}
 def main():
     DB.init()
     st.title("⚡ QUANT MASTER v70 — Institutional Signal Engine")
-    st.caption("Tek kaynak skorlama • Gerçek 4H teyidi • Doğru Supertrend • Risk bazlı boyutlandırma • Gerçekçi backtest")
+    st.caption("Tek kaynak skorlama • IC bazlı faktör kalibrasyonu • Walk-forward (out-of-sample) validasyon • "
+               "Gerçek 4H teyidi • Risk bazlı boyutlandırma")
 
     st.sidebar.header("Kontrol Merkezi")
     benchmark_sym = st.sidebar.text_input("Benchmark", BENCHMARK_DEFAULT)
@@ -808,6 +1003,7 @@ def main():
                 bench_close = bench_df["Close"] if bench_df is not None else None
                 regime = compute_regime(bench_df)
 
+                active_weights = st.session_state.get("calib_weights")  # walk-forward'dan gelirse
                 results, vetoed = [], []
                 for sym in BIST100_TICKERS:
                     df1 = data_1d.get(sym)
@@ -815,7 +1011,7 @@ def main():
                         continue
                     df4 = resample_to_4h(data_1h.get(sym))
                     feat = build_features(df1, bench_close, df4)
-                    res, status = evaluate_symbol(sym, feat, regime)
+                    res, status = evaluate_symbol(sym, feat, regime, active_weights)
                     if status == "PASS":
                         results.append(res)
                     else:
@@ -826,6 +1022,13 @@ def main():
                     rdf.sort_values("Score", ascending=False, inplace=True)
                 st.session_state["res"] = rdf
                 st.session_state["veto"] = pd.DataFrame(vetoed)
+
+        if st.session_state.get("calib_weights"):
+            w = st.session_state["calib_weights"]
+            st.success("Kalibre edilmiş (IC bazlı) ağırlıklar aktif: " +
+                       " | ".join(f"{f} %{w[f]*100:.0f}" for f in FACTORS))
+        else:
+            st.caption("Varsayılan ağırlıklar aktif (heuristik). Backtest sekmesinden IC kalibrasyonu çalıştırabilirsiniz.")
 
         if "res" in st.session_state and not st.session_state["res"].empty:
             rdf = st.session_state["res"]
@@ -886,36 +1089,89 @@ def main():
 
     # ---- TAB 4 ----
     with tab4:
-        st.subheader("Backtest — canlı sinyalle BİREBİR aynı skorlama")
-        st.caption("Komisyon+slipaj dahil • look-ahead engelli • aynı barda stop+hedef çakışması kötümser.")
+        st.subheader("Backtest & Validasyon")
         n_sym = st.slider("Test edilecek hisse sayısı", 10, len(BIST100_TICKERS), 40)
-        use_4h_bt = st.checkbox("Backtest'te 4H teyidi kullan (yavaşlatır)", value=False)
-        if st.button("🧪 Backtest Çalıştır"):
-            with st.spinner("Tarihsel simülasyon..."):
+
+        mode = st.radio(
+            "Mod",
+            ["Standart (tek pencere, varsayılan ağırlık)",
+             "Walk-Forward + IC Kalibrasyonu (out-of-sample)"],
+            index=1)
+
+        if mode.startswith("Walk"):
+            wf1, wf2 = st.columns(2)
+            n_folds = wf1.slider("Fold sayısı", 2, 6, 4)
+            horizon = wf2.slider("İleriye dönük getiri ufku (gün)", 5, 40, 20)
+            st.caption("Her fold: ağırlıklar YALNIZCA o dönemden önceki veriyle "
+                       "IC ile kalibre edilir, sonra görülmemiş dönemde test edilir. "
+                       "Sonuçlar overfitting'den arındırılmıştır.")
+        else:
+            st.caption("Komisyon+slipaj dahil • look-ahead engelli • aynı barda stop+hedef çakışması kötümser.")
+
+        if st.button("🧪 Çalıştır"):
+            with st.spinner("Veri çekiliyor ve simülasyon yapılıyor... (walk-forward biraz sürebilir)"):
                 syms = BIST100_TICKERS[:n_sym]
                 data_bt = fetch_universe(syms, interval="1d", period="3y")
                 bench_df = fetch_ticker(benchmark_sym, period="3y", interval="1d")
                 bench_close = bench_df["Close"] if bench_df is not None else None
                 regime = compute_regime(bench_df)
-                bt4 = None
-                if use_4h_bt:
-                    d1h = fetch_universe(syms, interval="1h", period="180d")
-                    bt4 = {s: resample_to_4h(d1h.get(s)) for s in syms}
-                trades = run_backtest(data_bt, bench_close, bt4, regime_series=regime)
 
-                if not trades.empty:
-                    m = backtest_metrics(trades)
-                    cols = st.columns(4)
-                    for i, (k, v) in enumerate(m.items()):
-                        cols[i % 4].metric(k, v)
-                    st.dataframe(trades.sort_values("Exit", ascending=False), use_container_width=True)
+                if mode.startswith("Walk"):
+                    trades, folds = walk_forward_backtest(
+                        data_bt, bench_close, regime,
+                        n_folds=n_folds, horizon=horizon)
+
+                    if trades is not None and not trades.empty:
+                        st.markdown("#### 📊 Out-of-Sample Sonuçlar (birleşik)")
+                        m = backtest_metrics(trades)
+                        cols = st.columns(4)
+                        for i, (k, v) in enumerate(m.items()):
+                            cols[i % 4].metric(k, v)
+
+                        st.markdown("#### 🎯 Fold Bazında Faktör IC ve Türetilen Ağırlıklar")
+                        fold_df = pd.DataFrame(folds)
+                        st.dataframe(fold_df, use_container_width=True)
+
+                        # Son fold'un ağırlıklarını tarayıcıya aktar
+                        if folds:
+                            last = folds[-1]
+                            calib = {f: last[f + " W%"] / 100.0 for f in FACTORS}
+                            st.session_state["calib_weights"] = calib
+                            st.markdown("#### ⚖️ Ortalama Faktör IC (öngörü gücü)")
+                            avg_ic = {f: round(np.mean([fo[f + " IC"] for fo in folds]), 3) for f in FACTORS}
+                            ic_cols = st.columns(len(FACTORS))
+                            for i, f in enumerate(FACTORS):
+                                ic_cols[i].metric(f + " IC", avg_ic[f])
+                            st.info("En son fold'un ağırlıkları tarayıcıya aktarıldı. "
+                                    "Tarama sekmesinde artık kalibre ağırlıklar kullanılacak. "
+                                    "(Pozitif IC = faktörün gelecek getiriyle pozitif ilişkisi.)")
+
+                        st.markdown("#### 📜 İşlemler (OOS)")
+                        st.dataframe(trades.sort_values("Exit", ascending=False), use_container_width=True)
+                    else:
+                        st.warning("Yeterli veri/işlem üretilemedi. Hisse sayısını veya dönemi artırın.")
                 else:
-                    st.warning("Kriterlere uyan işlem üretilmedi.")
+                    trades = run_backtest(data_bt, bench_close, None, regime_series=regime)
+                    if not trades.empty:
+                        m = backtest_metrics(trades)
+                        cols = st.columns(4)
+                        for i, (k, v) in enumerate(m.items()):
+                            cols[i % 4].metric(k, v)
+                        st.dataframe(trades.sort_values("Exit", ascending=False), use_container_width=True)
+                    else:
+                        st.warning("Kriterlere uyan işlem üretilmedi.")
+
+        if st.session_state.get("calib_weights"):
+            if st.button("↩️ Kalibrasyonu sıfırla (varsayılan ağırlığa dön)"):
+                del st.session_state["calib_weights"]
+                st.rerun()
 
     st.divider()
     st.caption("⚠️ Eğitim/araştırma amaçlıdır. Yatırım tavsiyesi değildir. "
-               "Backtest sonuçları maliyet/slipaj varsayımlarına ve survivorship-bias sınırına tabidir; "
-               "geçmiş performans gelecek getiriyi garanti etmez.")
+               "Walk-forward out-of-sample validasyon overfitting'i azaltır ama tek başına edge garantisi değildir. "
+               "Kalan yapısal sınır: yfinance verisi survivorship-bias içerir (bugünkü endeks üyeleri); "
+               "point-in-time üyelik için kurumsal veri sağlayıcı gerekir. "
+               "Geçmiş performans gelecek getiriyi garanti etmez.")
 
 
 if __name__ == "__main__":
