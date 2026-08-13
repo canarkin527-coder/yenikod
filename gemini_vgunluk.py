@@ -337,8 +337,8 @@ def compute_regime(benchmark_df):
     if d is None:
         return None
     reg = pd.Series(0, index=d.index)
-    bull = (d["Close"] > d["EMA50"]) & (d["EMA50"] > d["EMA200"])
-    bear = (d["Close"] < d["EMA50"]) & (d["EMA50"] < d["EMA200"])
+    bull = (d["Close"] > d["EMA_50"]) & (d["EMA_50"] > d["EMA_200"])
+    bear = (d["Close"] < d["EMA_50"]) & (d["EMA_50"] < d["EMA_200"])
     reg[bull] = 1
     reg[bear] = -1
     return reg
