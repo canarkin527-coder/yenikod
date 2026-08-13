@@ -88,6 +88,7 @@ class CFG:
     INITIAL_CAPITAL   = 100_000.0
     RISK_PER_TRADE    = 0.01     # NAV'ın %1'i riske
     MAX_POSITION_WT   = 0.15     # tek pozisyon NAV'ın max %15'i
+    MAX_POSITIONS     = 8        # eşzamanlı açık pozisyon tavanı (portföy simülasyonu)
 
     # --- Rejim ---
     REGIME_PENALTY    = 0.85     # kötü rejimde skor çarpanı
@@ -502,30 +503,30 @@ def grade_of(score):
 # TRADE PLAN — yapısal stop / gerçek hedef / anlamlı R-R
 # ==============================================================================
 
+def _trade_plan(c, atr, swing_low, resist):
+    """Trade planı çekirdeği (hem row hem dizi tabanlı çağrılar buradan geçer)."""
+    if np.isnan(swing_low):
+        swing_low = c - 2 * atr
+    if np.isnan(resist):
+        resist = c + 3 * atr
+    atr_stop = c - CFG.ATR_STOP_MULT * atr
+    struct_stop = swing_low - 0.2 * atr
+    stop = max(atr_stop, struct_stop) if struct_stop < c else atr_stop
+    stop = min(stop, c - 0.5 * atr)     # aşırı yakın stop'u engelle
+    tp = (c + CFG.ATR_TARGET_MULT * atr) if resist <= c * 1.01 else resist
+    risk = c - stop
+    rr = (tp - c) / (risk + 1e-10)
+    return round(stop, 2), round(tp, 2), round(rr, 2), round(risk, 2)
+
+
 def build_trade_plan(row):
     """Stop = ATR ve swing-low karışımı (tighter valid). Hedef = gerçek direnç
        ya da kırılım sonrası ölçülü hareket. R/R gerçekten değişkendir."""
     c = float(row["Close"])
     atr = float(row["ATR"])
-    swing_low = float(row["SwingLow"]) if not pd.isna(row["SwingLow"]) else c - 2 * atr
-    resist = float(row["Resistance"]) if not pd.isna(row["Resistance"]) else c + 3 * atr
-
-    atr_stop = c - CFG.ATR_STOP_MULT * atr
-    struct_stop = swing_low - 0.2 * atr
-    # geçerli olan daha yüksek (daha tighter) stop'u seç
-    stop = max(atr_stop, struct_stop) if struct_stop < c else atr_stop
-    stop = min(stop, c - 0.5 * atr)  # aşırı yakın stop'u engelle
-
-    # hedef: fiyat direnci zaten kırdıysa ölçülü hareket, değilse direnç
-    if resist <= c * 1.01:
-        tp = c + CFG.ATR_TARGET_MULT * atr
-    else:
-        tp = resist
-
-    risk = c - stop
-    reward = tp - c
-    rr = reward / (risk + 1e-10)
-    return round(stop, 2), round(tp, 2), round(rr, 2), round(risk, 2)
+    swing_low = float(row["SwingLow"]) if not pd.isna(row["SwingLow"]) else np.nan
+    resist = float(row["Resistance"]) if not pd.isna(row["Resistance"]) else np.nan
+    return _trade_plan(c, atr, swing_low, resist)
 
 
 # ==============================================================================
@@ -824,6 +825,234 @@ def walk_forward_backtest(data_map, benchmark_close, regime_series,
     return pd.DataFrame(all_oos_trades), fold_reports
 
 
+# ------------------------------------------------------------------------------
+# PORTFÖY-SEVİYE SİMÜLASYON (eşzamanlı pozisyon, sermaye kısıtı, equity eğrisi)
+# ------------------------------------------------------------------------------
+
+def portfolio_backtest(feat_map, comp_map, reg_map, weights_by_date,
+                       min_score=None, initial_capital=None,
+                       max_positions=None, risk_per_trade=None, max_weight=None):
+    """Olay-güdümlü GÜNLÜK portföy simülasyonu.
+       - Tüm semboller ortak tarih ekseninde birlikte işlenir.
+       - Sinyal kapanışta üretilir, giriş ertesi gün AÇILIŞINDA (look-ahead yok).
+       - Sermaye, eşzamanlı pozisyon tavanı ve risk bazlı boyut birlikte uygulanır.
+       - weights_by_date: {date -> weights_vec}. Bir tarih sözlükte yoksa o gün
+         YENİ pozisyon açılmaz (walk-forward: sadece test pencerelerinde işlem).
+       Döner: (equity_df, trades_df)
+    """
+    min_score = CFG.SIGNAL_MIN if min_score is None else min_score
+    initial_capital = CFG.INITIAL_CAPITAL if initial_capital is None else initial_capital
+    max_positions = CFG.MAX_POSITIONS if max_positions is None else max_positions
+    risk_per_trade = CFG.RISK_PER_TRADE if risk_per_trade is None else risk_per_trade
+    max_weight = CFG.MAX_POSITION_WT if max_weight is None else max_weight
+
+    # Sembol bazında dizileri ve tarih->indeks eşlemesini hazırla
+    S = {}
+    for sym, feat in feat_map.items():
+        idx = feat.index
+        S[sym] = {
+            "idx_map": {ts: i for i, ts in enumerate(idx)},
+            "open": feat["Open"].values, "high": feat["High"].values,
+            "low": feat["Low"].values, "close": feat["Close"].values,
+            "ema20": feat["EMA_20"].values, "atr": feat["ATR"].values,
+            "liq": feat["LiqTL"].values,
+            "swing": feat["SwingLow"].values, "resist": feat["Resistance"].values,
+            "comp": comp_map[sym], "reg": reg_map[sym], "n": len(feat),
+        }
+
+    all_dates = pd.DatetimeIndex(sorted(set().union(*[f.index for f in feat_map.values()])))
+
+    cash = initial_capital
+    positions = {}          # sym -> dict(shares, entry_px, stop, tp, entry_date, entry_i, last_close)
+    pending = []            # ertesi gün açılışında açılacak adaylar (sym, score, stop, tp)
+    equity_curve = []
+    trades = []
+    invested_days = 0
+
+    for d in all_dates:
+        # 1) BEKLEYEN GİRİŞLERİ BUGÜNKÜ AÇILIŞTA UYGULA (skora göre sıralı)
+        if pending:
+            equity_now = cash + sum(p["shares"] * p["last_close"] for p in positions.values())
+            for sym, score, stp, tgt in sorted(pending, key=lambda x: -x[1]):
+                if len(positions) >= max_positions:
+                    break
+                if sym in positions:
+                    continue
+                s = S[sym]
+                if d not in s["idx_map"]:
+                    continue
+                i = s["idx_map"][d]
+                entry_px = s["open"][i] * (1 + CFG.SLIPPAGE_PCT)
+                risk_ps = entry_px - stp
+                if risk_ps <= 0:
+                    continue
+                shares = int((equity_now * risk_per_trade) // risk_ps)
+                cap_cost = min(cash, equity_now * max_weight)
+                shares = min(shares, int(cap_cost // entry_px))
+                if shares <= 0:
+                    continue
+                cost = shares * entry_px * (1 + CFG.COMMISSION_PCT)
+                if cost > cash:
+                    continue
+                cash -= cost
+                positions[sym] = {"shares": shares, "entry_px": entry_px, "stop": stp,
+                                  "tp": tgt, "entry_date": d, "entry_i": i,
+                                  "last_close": s["close"][i]}
+            pending = []
+
+        # 2) ÇIKIŞLARI KONTROL ET (bugünün high/low/close'u ile)
+        for sym in list(positions.keys()):
+            s = S[sym]; p = positions[sym]
+            if d not in s["idx_map"]:
+                continue  # bugün bu sembolde bar yok; pozisyonu taşı
+            i = s["idx_map"][d]
+            p["last_close"] = s["close"][i]
+            exit_px = None; reason = None
+            if s["low"][i] <= p["stop"]:
+                exit_px, reason = p["stop"] * (1 - CFG.SLIPPAGE_PCT), "STOP"
+            elif s["high"][i] >= p["tp"]:
+                exit_px, reason = p["tp"] * (1 - CFG.SLIPPAGE_PCT), "TARGET"
+            elif CFG.MAX_HOLD_BARS and (i - p["entry_i"]) >= CFG.MAX_HOLD_BARS:
+                exit_px, reason = s["close"][i] * (1 - CFG.SLIPPAGE_PCT), "TIME"
+            if exit_px is not None:
+                proceeds = p["shares"] * exit_px * (1 - CFG.COMMISSION_PCT)
+                cash += proceeds
+                pnl_pct = (exit_px / p["entry_px"] - 1) * 100 - 2 * CFG.COMMISSION_PCT * 100
+                trades.append({"Symbol": sym, "Entry": p["entry_date"], "Exit": d,
+                               "Bars": i - p["entry_i"], "PnL_Pct": round(pnl_pct, 2),
+                               "Reason": reason})
+                del positions[sym]
+
+        # 3) MARK-TO-MARKET (bugünün kapanışı) -> equity eğrisi
+        equity = cash + sum(p["shares"] * p["last_close"] for p in positions.values())
+        equity_curve.append({"date": d, "equity": equity,
+                             "positions": len(positions), "cash": cash})
+        if positions:
+            invested_days += 1
+
+        # 4) BUGÜNÜN SİNYALLERİNİ ÜRET -> ertesi gün için beklet
+        wv = weights_by_date.get(d)
+        if wv is None:
+            continue  # bu tarih bir test penceresinde değil -> yeni giriş yok
+        if len(positions) >= max_positions:
+            continue
+        for sym, s in S.items():
+            if sym in positions:
+                continue
+            if d not in s["idx_map"]:
+                continue
+            i = s["idx_map"][d]
+            if i < CFG.MIN_BARS or i >= s["n"] - 1:
+                continue
+            atr = s["atr"][i]
+            if np.isnan(atr) or atr <= 0:
+                continue
+            if s["liq"][i] < CFG.MIN_LIQUIDITY_TL:
+                continue
+            if abs(s["close"][i] - s["ema20"][i]) > CFG.MAX_EXTENSION_ATR * atr:
+                continue
+            regime_val = int(s["reg"][i])
+            if CFG.REGIME_HARD_BLOCK and regime_val == -1:
+                continue
+            stp, tgt, rr, risk = _trade_plan(s["close"][i], atr, s["swing"][i], s["resist"][i])
+            if risk <= 0 or rr < CFG.MIN_RR:
+                continue
+            score = 100.0 * float(np.dot(s["comp"][i], wv))
+            if regime_val == -1:
+                score *= CFG.REGIME_PENALTY
+            if score >= min_score:
+                pending.append((sym, score, stp, tgt))
+
+    equity_df = pd.DataFrame(equity_curve)
+    trades_df = pd.DataFrame(trades)
+    equity_df.attrs["invested_ratio"] = invested_days / max(len(all_dates), 1)
+    return equity_df, trades_df
+
+
+def walk_forward_portfolio(data_map, benchmark_close, regime_series, df4_map=None,
+                           n_folds=4, horizon=20, initial_train_frac=0.40,
+                           min_score=None, initial_capital=None):
+    """Walk-forward + portföy: her fold'un ağırlıkları o dönemden ÖNCEKI veriyle
+       IC ile kalibre edilir, sonra TEK sürekli equity eğrisi üzerinde
+       out-of-sample işlenir (sermaye foldlar arası taşınır)."""
+    feat_map, comp_map, reg_map = prepare_feature_maps(
+        data_map, benchmark_close, regime_series, df4_map)
+    if not feat_map:
+        return pd.DataFrame(), pd.DataFrame(), []
+
+    all_dates = pd.DatetimeIndex(sorted(set().union(*[f.index for f in feat_map.values()])))
+    if len(all_dates) < CFG.MIN_BARS + 250:
+        return pd.DataFrame(), pd.DataFrame(), []
+    usable = all_dates[CFG.MIN_BARS:]
+    n = len(usable)
+    start_idx = int(n * initial_train_frac)
+    test_span = n - start_idx
+    fold_len = max(1, test_span // n_folds)
+    buffer = pd.Timedelta(days=int(horizon * 1.6))
+
+    panel = build_panel(feat_map, comp_map, horizon=horizon)
+
+    weights_by_date = {}
+    fold_reports = []
+    for k in range(n_folds):
+        t0 = start_idx + k * fold_len
+        t1 = start_idx + (k + 1) * fold_len if k < n_folds - 1 else n - 1
+        test_start, test_end = usable[t0], usable[t1]
+        train_cutoff = test_start - buffer
+        weights, ics, n_obs = compute_ic_weights(panel[panel["date"] < train_cutoff])
+        wv = _weights_vec(weights)
+        # bu fold'un test penceresindeki her güne ağırlıkları ata
+        for d in usable[t0:t1 + 1]:
+            weights_by_date[d] = wv
+        rep = {"Fold": k + 1, "Test Start": test_start.date().isoformat(),
+               "Test End": test_end.date().isoformat(), "Train Obs": n_obs}
+        for f in FACTORS:
+            rep[f + " W%"] = round(weights[f] * 100, 1)
+            rep[f + " IC"] = round(ics[f], 3)
+        fold_reports.append(rep)
+
+    equity_df, trades_df = portfolio_backtest(
+        feat_map, comp_map, reg_map, weights_by_date,
+        min_score=min_score, initial_capital=initial_capital)
+    return equity_df, trades_df, fold_reports
+
+
+def portfolio_metrics(equity_df, trades_df, initial_capital=None):
+    """Portföy equity eğrisinden gerçek portföy metrikleri."""
+    initial_capital = CFG.INITIAL_CAPITAL if initial_capital is None else initial_capital
+    if equity_df is None or equity_df.empty:
+        return {}
+    eq = equity_df["equity"].values
+    final = eq[-1]
+    total_ret = final / initial_capital - 1.0
+    days = (equity_df["date"].iloc[-1] - equity_df["date"].iloc[0]).days
+    cagr = (final / initial_capital) ** (365.0 / max(days, 1)) - 1.0 if final > 0 else -1.0
+    daily_ret = pd.Series(eq).pct_change().dropna()
+    sharpe = (daily_ret.mean() / (daily_ret.std() + 1e-10)) * np.sqrt(252) if len(daily_ret) > 1 else 0.0
+    peak = pd.Series(eq).cummax()
+    max_dd = ((pd.Series(eq) - peak) / peak).min() * 100
+    n_trades = 0 if trades_df is None or trades_df.empty else len(trades_df)
+    win_rate = 0.0; pf = 0.0
+    if n_trades:
+        r = trades_df["PnL_Pct"] / 100.0
+        win_rate = (r > 0).mean() * 100
+        gw = r[r > 0].sum(); gl = -r[r <= 0].sum()
+        pf = gw / gl if gl > 0 else float("inf")
+    exposure = equity_df.attrs.get("invested_ratio", 0.0) * 100
+    return {
+        "Başlangıç ₺": f"{initial_capital:,.0f}",
+        "Bitiş ₺": f"{final:,.0f}",
+        "Toplam Getiri %": round(total_ret * 100, 1),
+        "CAGR %": round(cagr * 100, 1),
+        "Max Drawdown %": round(max_dd, 1),
+        "Sharpe (yıllık)": round(sharpe, 2),
+        "Toplam İşlem": n_trades,
+        "Kazanma Oranı %": round(win_rate, 1),
+        "Profit Factor": round(pf, 2) if pf != float("inf") else "∞",
+        "Piyasada Kalma %": round(exposure, 1),
+    }
+
+
 def backtest_metrics(trades_df):
     """Profesyonel metrik seti."""
     if trades_df is None or trades_df.empty:
@@ -1094,17 +1323,25 @@ def main():
 
         mode = st.radio(
             "Mod",
-            ["Standart (tek pencere, varsayılan ağırlık)",
-             "Walk-Forward + IC Kalibrasyonu (out-of-sample)"],
-            index=1)
+            ["Standart (tek pencere, işlem bazlı)",
+             "Walk-Forward + IC (işlem bazlı, out-of-sample)",
+             "Walk-Forward PORTFÖY (sermaye kısıtlı, equity eğrisi) ⭐"],
+            index=2)
 
-        if mode.startswith("Walk"):
+        if mode.startswith("Walk-Forward PORTFÖY"):
+            p1, p2, p3 = st.columns(3)
+            n_folds = p1.slider("Fold sayısı", 2, 6, 4)
+            horizon = p2.slider("Getiri ufku (gün)", 5, 40, 20)
+            CFG.MAX_POSITIONS = p3.slider("Max eşzamanlı pozisyon", 3, 20, CFG.MAX_POSITIONS)
+            st.caption("Gerçek portföy muhasebesi: eşzamanlı pozisyonlar, sermaye kısıtı, "
+                       "risk bazlı boyut, foldlar arası taşınan sürekli equity eğrisi. "
+                       "Ağırlıklar her fold öncesi IC ile kalibre edilir (out-of-sample).")
+        elif mode.startswith("Walk-Forward + IC"):
             wf1, wf2 = st.columns(2)
             n_folds = wf1.slider("Fold sayısı", 2, 6, 4)
             horizon = wf2.slider("İleriye dönük getiri ufku (gün)", 5, 40, 20)
             st.caption("Her fold: ağırlıklar YALNIZCA o dönemden önceki veriyle "
-                       "IC ile kalibre edilir, sonra görülmemiş dönemde test edilir. "
-                       "Sonuçlar overfitting'den arındırılmıştır.")
+                       "IC ile kalibre edilir, sonra görülmemiş dönemde test edilir.")
         else:
             st.caption("Komisyon+slipaj dahil • look-ahead engelli • aynı barda stop+hedef çakışması kötümser.")
 
@@ -1116,7 +1353,37 @@ def main():
                 bench_close = bench_df["Close"] if bench_df is not None else None
                 regime = compute_regime(bench_df)
 
-                if mode.startswith("Walk"):
+                if mode.startswith("Walk-Forward PORTFÖY"):
+                    equity_df, trades, folds = walk_forward_portfolio(
+                        data_bt, bench_close, regime, n_folds=n_folds, horizon=horizon)
+
+                    if equity_df is not None and not equity_df.empty:
+                        m = portfolio_metrics(equity_df, trades)
+                        st.markdown("#### 💰 Portföy Sonuçları (Out-of-Sample, sürekli equity)")
+                        cols = st.columns(5)
+                        for i, (k, v) in enumerate(m.items()):
+                            cols[i % 5].metric(k, v)
+
+                        st.markdown("#### 📈 Özsermaye (Equity) Eğrisi")
+                        eq_plot = equity_df.set_index("date")["equity"]
+                        st.line_chart(eq_plot)
+
+                        st.markdown("#### 🎯 Fold Bazında IC Ağırlıkları")
+                        st.dataframe(pd.DataFrame(folds), use_container_width=True)
+
+                        # son fold ağırlıklarını tarayıcıya aktar
+                        if folds:
+                            last = folds[-1]
+                            st.session_state["calib_weights"] = {f: last[f + " W%"] / 100.0 for f in FACTORS}
+                            st.info("Son fold'un ağırlıkları tarayıcıya aktarıldı.")
+
+                        if trades is not None and not trades.empty:
+                            st.markdown("#### 📜 İşlemler (OOS)")
+                            st.dataframe(trades.sort_values("Exit", ascending=False), use_container_width=True)
+                    else:
+                        st.warning("Yeterli veri/işlem üretilemedi. Hisse sayısını veya dönemi artırın.")
+
+                elif mode.startswith("Walk-Forward + IC"):
                     trades, folds = walk_forward_backtest(
                         data_bt, bench_close, regime,
                         n_folds=n_folds, horizon=horizon)
