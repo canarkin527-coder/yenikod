@@ -1,47 +1,44 @@
 # ==============================================================================
-# QUANT MASTER v70 - INSTITUTIONAL SIGNAL ENGINE (REDESIGN)
+# QUANT MASTER v72 - INSTITUTIONAL SIGNAL ENGINE
 # ==============================================================================
 #
-# NEDEN v70 (v67.2'ye göre temel farklar):
+# v71'e GÖRE DEĞİŞENLER:
 #
-#  1) TEK KAYNAK SKORLAMA (Single Source of Truth):
-#     Tarayıcı ve Backtest AYNI `score_row()` fonksiyonunu çağırır.
-#     Böylece backtest'in gösterdiği istatistik, canlıda kullanılan sinyalin
-#     tam olarak kendisine aittir. (v67.2'de bu ikisi farklı formüldü.)
+#  1) DİRENÇ TOLERANSI AYARLANABİLİR (RESIST_TOLERANCE):
+#     v71'de `resist <= c*1.01` sabitti. Zirvedeki lider hisseler bu %1'lik
+#     bandın neredeyse hep içinde kaldığı için hedef mekanik 3xATR'a düşüyor
+#     ve RR yine tam 1.5 çıkıyordu. Tolerans artık 1.002 varsayılan ve
+#     arayüzden ayarlanabilir -> gerçek direnç seviyeleri devreye girer.
 #
-#  2) ORTOGONAL 5 FAKTÖR BLOĞU (korelasyon azaltıldı):
-#     Trend (25) | Momentum (20) | Hacim/Para Akışı (20) |
-#     Göreceli Güç RS (20) | Yapı & Çok Zaman Dilimi (15) = 100
-#     Aynı "trend var mı" sinyali 5 kez sayılmaz; RS gibi bağımsız ve
-#     öngörü gücü yüksek faktöre ağırlık verilir.
+#  2) T1_ATR_MULT VARSAYILANI 2.0:
+#     near_exit_plan icinde T1 = min(R bazli, ATR bazli). v71'de ATR carpani
+#     1.0 oldugu icin T1 surekli bastiriliyor, stop 2 ATR iken hedef 1 ATR
+#     kaliyor ve BE_WR yapisal olarak %70'lerde cakiliyordu. Artik ATR siniri
+#     T1'i bagalamiyor; R bazli mesafe belirleyici.
 #
-#  3) GERÇEK 4H TEYİDİ:
-#     1H veri çekilir ve 4H'a RESAMPLE edilir (v67.2 sadece 1H'ı 4H sanıyordu).
+#  3) TARAMA TABLOSUNDA VARSAYILAN GÖRÜNÜM "Çıkış Planı":
+#     T1 / BE / BE_WR% kolonlari ATR'in sagina dusup gorunmez kalmasin diye.
 #
-#  4) DOĞRU SUPERTREND:
-#     Standart "final band kilitleme" mantığıyla (whipsaw azalır).
+# v70'e GÖRE DEĞİŞENLER:
 #
-#  5) ANLAMLI R/R + YAPISAL STOP/HEDEF:
-#     Stop = ATR ve son swing low karışımı; Hedef = gerçek direnç seviyesi.
-#     R/R artık her hissede değişir; "geçersiz R/R" vetosu gerçekten çalışır.
+#  A) YAKIN ÇIKIŞ (T1) SİSTEMİ:
+#     Uzak yapısal hedefin (T2) yanında, maliyet-düzeltilmiş bir yakın çıkış
+#     seviyesi (T1) üretilir. Tarama tablosunda T1, BE (başabaş) ve BE_WR%
+#     (bu planı başabaşa getiren kazanma oranı) kolonları görünür.
 #
-#  6) RİSK BAZLI POZİSYON BOYUTLANDIRMA:
-#     Sabit %10 yerine, işlem başına sermayenin %X'i riske edilir
-#     (shares = risk_bütçesi / (giriş - stop)), pozisyon ağırlık tavanı ile.
+#  B) KISMİ KÂR ALMA + BAŞABAŞ STOP:
+#     T1'de pozisyonun bir kısmı satılır, stop başabaşa çekilir, kalan T2'ye
+#     taşınır. Hem işlem-bazlı hem PORTFÖY backtest'inde simüle edilir, böylece
+#     "yakın çıkış gerçekten daha mı iyi" sorusunu VERİ cevaplar.
 #
-#  7) PİYASA REJİM FİLTRESİ:
-#     Endeks (XU100) kendi trendinin altındaysa long maruziyeti cezalandırılır
-#     / opsiyonel olarak engellenir.
-#
-#  8) GERÇEKÇİ BACKTEST:
-#     Komisyon + slipaj modellenir, look-ahead engellenir (sinyal kapanışta,
-#     giriş bir sonraki açılışta), aynı barda stop+hedef çakışırsa kötümser
-#     (stop öncelikli) varsayım, tam metrik seti (Profit Factor, Max DD,
-#     beklenti/expectancy, Sharpe yaklaşık).
-#
-#  9) VERİ KALİTESİ:
-#     auto_adjust=True (bedelsiz/temettü düzeltmeleri), NaN/az-veri kontrolleri,
-#     likidite vetosu.
+#  C) DÜZELTMELER:
+#     - grade_of() mükerrer tanımı kaldırıldı.
+#     - Resistance artık .shift(1) ile hesaplanıyor (v70'te bugünün high'ını
+#       içerdiği için hedef sürekli 3xATR'a düşüyor ve RR mekanik olarak
+#       tam 1.5 çıkıyordu).
+#     - RR_Net: komisyon + slipaj düşülmüş gerçek risk/ödül kolonu.
+#     - ATR stop çarpanı ve MIN_RR arayüzden ayarlanabilir (yakın çıkış tarzı
+#       kullanılacaksa ikisinin birlikte değişmesi gerekir).
 #
 #  UYARI: Bu bir ARAŞTIRMA/EĞİTİM aracıdır. Yatırım tavsiyesi değildir.
 #  Geçmiş performans gelecek getiriyi garanti etmez.
@@ -62,8 +59,9 @@ warnings.filterwarnings("ignore")
 # GLOBAL CONFIG
 # ==============================================================================
 
-DB_FILE = "quant_master_v70.db"
+DB_FILE = "quant_master_v72.db"
 BENCHMARK_DEFAULT = "XU100.IS"
+
 
 class CFG:
     # --- Skor eşikleri (grade) ---
@@ -83,12 +81,22 @@ class CFG:
     SWING_LOOKBACK    = 10       # yapısal stop için
     RESIST_LOOKBACK   = 20       # hedef (direnç) için
     ATR_TARGET_MULT   = 3.0      # kırılım sonrası ölçülü hedef
+    RESIST_TOLERANCE  = 1.002    # direnç bu bandın içindeyse mekanik ATR hedefi
+                                 # kullanılır. v71'de 1.01 sabitti ve zirvedeki
+                                 # hisselerde RR'yi hep 1.5'e kilitliyordu.
+
+    # --- YAKIN ÇIKIŞ (T1) ---
+    T1_R_MULT         = 1.0      # ilk hedef = riskin 1.0 katı (1R)
+    T1_ATR_MULT       = 2.0      # ATR tavanı (küçüğü seçilir; 2.0 = bağlamaz)
+    PARTIAL_PCT       = 0.50     # T1'de pozisyonun yüzde kaçı satılsın
+    MOVE_STOP_TO_BE   = True     # T1 sonrası stop başabaşa çekilsin mi
+    USE_SCALED_EXIT   = False    # backtest'te kısmi kâr alma modu
 
     # --- Risk / para yönetimi ---
     INITIAL_CAPITAL   = 100_000.0
     RISK_PER_TRADE    = 0.01     # NAV'ın %1'i riske
     MAX_POSITION_WT   = 0.15     # tek pozisyon NAV'ın max %15'i
-    MAX_POSITIONS     = 8        # eşzamanlı açık pozisyon tavanı (portföy simülasyonu)
+    MAX_POSITIONS     = 8        # eşzamanlı açık pozisyon tavanı
 
     # --- Rejim ---
     REGIME_PENALTY    = 0.85     # kötü rejimde skor çarpanı
@@ -98,6 +106,11 @@ class CFG:
     COMMISSION_PCT    = 0.0015   # işlem başına (tek yön)
     SLIPPAGE_PCT      = 0.0010
     MAX_HOLD_BARS     = 40       # zaman bazlı çıkış (0 = kapalı)
+
+    @staticmethod
+    def round_trip_cost():
+        """Gidiş-dönüş toplam maliyet (oransal). Varsayılan: %0.50"""
+        return 2 * CFG.COMMISSION_PCT + 2 * CFG.SLIPPAGE_PCT
 
 
 # ==============================================================================
@@ -237,8 +250,8 @@ def compute_indicators(df):
 
     # RSI (Wilder)
     delta = c.diff()
-    gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
-    loss = (-delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
+    gain = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
     df["RSI"] = 100 - (100 / (1 + gain / (loss + 1e-10)))
 
     # MACD
@@ -261,8 +274,11 @@ def compute_indicators(df):
     df["POC"] = (c * v).rolling(30).sum() / (v.rolling(30).sum() + 1e-10)
 
     # Yapısal stop/hedef seviyeleri
+    # DÜZELTME (v71): Resistance .shift(1) ile — bugünün high'ı dahil edilmez.
+    # v70'te shift yoktu; bu yüzden zirvedeki hisselerde resist ~= fiyat çıkıyor,
+    # hedef mekanik olarak 3xATR'a düşüyor ve RR daima tam 1.5 oluyordu.
     df["SwingLow"] = l.rolling(CFG.SWING_LOOKBACK).min()
-    df["Resistance"] = h.rolling(CFG.RESIST_LOOKBACK).max()
+    df["Resistance"] = h.rolling(CFG.RESIST_LOOKBACK).max().shift(1)
 
     # Likidite
     df["LiqTL"] = (c * v).rolling(20).mean()
@@ -282,17 +298,14 @@ def _supertrend_dir(h, l, c, atr, mult=3.0):
     f_up = np.zeros(n); f_lo = np.zeros(n); direction = np.ones(n)
     f_up[0], f_lo[0] = upper[0], lower[0]
     for i in range(1, n):
-        # final lower band kilitle
-        f_lo[i] = lower[i] if (lower[i] > f_lo[i-1] or cv[i-1] < f_lo[i-1]) else f_lo[i-1]
-        # final upper band kilitle
-        f_up[i] = upper[i] if (upper[i] < f_up[i-1] or cv[i-1] > f_up[i-1]) else f_up[i-1]
-        # yön
-        if cv[i] > f_up[i-1]:
+        f_lo[i] = lower[i] if (lower[i] > f_lo[i - 1] or cv[i - 1] < f_lo[i - 1]) else f_lo[i - 1]
+        f_up[i] = upper[i] if (upper[i] < f_up[i - 1] or cv[i - 1] > f_up[i - 1]) else f_up[i - 1]
+        if cv[i] > f_up[i - 1]:
             direction[i] = 1
-        elif cv[i] < f_lo[i-1]:
+        elif cv[i] < f_lo[i - 1]:
             direction[i] = -1
         else:
-            direction[i] = direction[i-1]
+            direction[i] = direction[i - 1]
     return pd.Series(direction, index=c.index)
 
 
@@ -325,28 +338,24 @@ def _strip_tz(idx):
 
 
 def attach_mtf(df_daily, df_4h):
-    """4H trend (Close>EMA20 ve EMA20 yükseliyor) -> günlük indekse hizala + shift (look-ahead yok).
-       yfinance intraday verisi tz-aware, günlük veri tz-naive gelir; ikisini de tz-naive'e indiririz."""
+    """4H trend (Close>EMA20 ve EMA20 yükseliyor) -> günlük indekse hizala + shift."""
     if df_4h is None or df_4h.empty:
         df_daily["MTF_Bull"] = 0
         return df_daily
     try:
         d4 = df_4h.copy()
-        d4.index = _strip_tz(d4.index)                     # 4H saat dilimini kaldır
+        d4.index = _strip_tz(d4.index)
         d4["EMA20"] = d4["Close"].ewm(span=20, adjust=False).mean()
         bull4 = ((d4["Close"] > d4["EMA20"]) & (d4["EMA20"] > d4["EMA20"].shift(1))).astype(int)
 
-        # 4H durumunu gün sonuna indir -> normalize -> 1 gün kaydır (o günün intraday'ini kullanma)
         daily_state = bull4.resample("1D").last().ffill()
         daily_state.index = daily_state.index.normalize()
         daily_state = daily_state.shift(1)
 
-        # günlük df indeksini de tz-naive normalized tarihe çevir ve pozisyonel hizala
         key = _strip_tz(df_daily.index).normalize()
         mapped = daily_state.reindex(key, method="ffill")
         df_daily["MTF_Bull"] = mapped.fillna(0).astype(int).values
     except Exception:
-        # herhangi bir hizalama sorununda MTF'i nötr bırak (sinyali bozmasın)
         df_daily["MTF_Bull"] = 0
     return df_daily
 
@@ -371,8 +380,7 @@ def compute_regime(benchmark_df):
 # ==============================================================================
 
 def build_features(df, benchmark_close, df_4h):
-    """Sinyal için gerekli tüm kolonları TEK SEFERDE hesaplar.
-       Hem son bar (tarayıcı) hem her bar (backtest) aynı kolonlardan okunur."""
+    """Sinyal için gerekli tüm kolonları TEK SEFERDE hesaplar."""
     d = compute_indicators(df)
     if d is None:
         return None
@@ -381,10 +389,8 @@ def build_features(df, benchmark_close, df_4h):
     return d
 
 
-# --- Faktör tanımları (her blok kendi maksimum ham puanına göre [0,1]'e normalize edilir) ---
 FACTORS = ["Trend", "Momentum", "Flow", "RS", "Structure"]
 FACTOR_MAX = {"Trend": 25.0, "Momentum": 20.0, "Flow": 20.0, "RS": 20.0, "Structure": 15.0}
-# Kalibrasyon yapılmazsa kullanılacak varsayılan ağırlıklar (toplam 1.0)
 DEFAULT_WEIGHTS = {"Trend": 0.25, "Momentum": 0.20, "Flow": 0.20, "RS": 0.20, "Structure": 0.15}
 
 
@@ -460,11 +466,7 @@ def score_from_components(comp, weights, regime_val=1):
 
 
 def score_row(row, regime_val=1, weights=None):
-    """
-    TEK KAYNAK SKORLAMA. Tarayıcı VE backtest bunu kullanır.
-    weights=None -> DEFAULT_WEIGHTS; kalibre edilmiş ağırlıklar geçilebilir.
-    Döner: (score, breakdown_dict)
-    """
+    """TEK KAYNAK SKORLAMA. Tarayıcı VE backtest bunu kullanır."""
     weights = DEFAULT_WEIGHTS if weights is None else weights
     pts = factor_points(row)
     comp = components_from_points(pts)
@@ -476,20 +478,11 @@ def score_row(row, regime_val=1, weights=None):
 
 
 def compute_components_df(feat):
-    """Her bar için 5 faktör bileşenini ([0,1]) TEK SEFERDE üretir.
-       Panel/IC ve walk-forward buradan okur; folddan folda yeniden hesaplanmaz."""
+    """Her bar için 5 faktör bileşenini ([0,1]) TEK SEFERDE üretir."""
     if feat is None or feat.empty:
         return None
     recs = [components_from_points(factor_points(feat.iloc[i])) for i in range(len(feat))]
-    comp_df = pd.DataFrame(recs, index=feat.index)
-    return comp_df
-
-
-def grade_of(score):
-    if score >= CFG.GRADE_A_PLUS: return "A+"
-    if score >= CFG.GRADE_A: return "A"
-    if score >= CFG.GRADE_B_PLUS: return "B+"
-    return "WATCH"
+    return pd.DataFrame(recs, index=feat.index)
 
 
 def grade_of(score):
@@ -500,7 +493,7 @@ def grade_of(score):
 
 
 # ==============================================================================
-# TRADE PLAN — yapısal stop / gerçek hedef / anlamlı R-R
+# TRADE PLAN — yapısal stop / gerçek hedef / anlamlı R-R / YAKIN ÇIKIŞ
 # ==============================================================================
 
 def _trade_plan(c, atr, swing_low, resist):
@@ -513,15 +506,14 @@ def _trade_plan(c, atr, swing_low, resist):
     struct_stop = swing_low - 0.2 * atr
     stop = max(atr_stop, struct_stop) if struct_stop < c else atr_stop
     stop = min(stop, c - 0.5 * atr)     # aşırı yakın stop'u engelle
-    tp = (c + CFG.ATR_TARGET_MULT * atr) if resist <= c * 1.01 else resist
+    tp = (c + CFG.ATR_TARGET_MULT * atr) if resist <= c * CFG.RESIST_TOLERANCE else resist
     risk = c - stop
     rr = (tp - c) / (risk + 1e-10)
     return round(stop, 2), round(tp, 2), round(rr, 2), round(risk, 2)
 
 
 def build_trade_plan(row):
-    """Stop = ATR ve swing-low karışımı (tighter valid). Hedef = gerçek direnç
-       ya da kırılım sonrası ölçülü hareket. R/R gerçekten değişkendir."""
+    """Stop = ATR ve swing-low karışımı. Hedef = gerçek direnç ya da ölçülü hareket."""
     c = float(row["Close"])
     atr = float(row["ATR"])
     swing_low = float(row["SwingLow"]) if not pd.isna(row["SwingLow"]) else np.nan
@@ -529,8 +521,59 @@ def build_trade_plan(row):
     return _trade_plan(c, atr, swing_low, resist)
 
 
+def net_rr(c, stop, tp):
+    """Komisyon + slipaj düşülmüş gerçek risk/ödül."""
+    cost = CFG.round_trip_cost()
+    net_gain = (tp / c - 1) - cost
+    net_risk = (1 - stop / c) + cost
+    if net_risk <= 0:
+        return 0.0
+    return round(net_gain / net_risk, 2)
+
+
+def near_exit_plan(close, atr, stop, target,
+                   t1_r_mult=None, t1_atr_mult=None):
+    """Uzak hedefin (T2) yanında maliyet-düzeltilmiş YAKIN çıkış seviyeleri.
+
+    Döner:
+      BE      : komisyon+slipaj sonrası gerçek başabaş fiyatı
+      T1      : yakın çıkış (R bazlı ve ATR bazlı olanın KÜÇÜĞÜ -> ulaşılabilir)
+      T1_Pct  : T1'e kadar brüt yüzde hareket
+      T1_Net  : maliyet düşüldükten sonra net yüzde
+      Stop_Net: stop olursa net yüzde kayıp (negatif)
+      BE_WR   : bu planı başabaşa getiren kazanma oranı (%) — EN KRİTİK SAYI
+    """
+    t1_r_mult = CFG.T1_R_MULT if t1_r_mult is None else t1_r_mult
+    t1_atr_mult = CFG.T1_ATR_MULT if t1_atr_mult is None else t1_atr_mult
+
+    risk = close - stop
+    if risk <= 0 or np.isnan(atr) or atr <= 0:
+        return None
+
+    cost = CFG.round_trip_cost()
+    be = close * (1 + cost)
+    t1 = min(close + t1_r_mult * risk, close + t1_atr_mult * atr)
+    t1 = max(t1, be * 1.002)          # maliyetin altında hedef anlamsız
+    t1 = min(t1, target)              # T1 asla T2'yi geçmesin
+
+    gross_win = (t1 / close - 1) * 100
+    net_win = gross_win - cost * 100
+    net_loss = (stop / close - 1) * 100 - cost * 100
+
+    be_wr = abs(net_loss) / (abs(net_loss) + net_win) * 100 if net_win > 0 else 100.0
+
+    return {
+        "BE": round(be, 2),
+        "T1": round(t1, 2),
+        "T1_Pct": round(gross_win, 2),
+        "T1_Net": round(net_win, 2),
+        "Stop_Net": round(net_loss, 2),
+        "BE_WR": round(be_wr, 1),
+    }
+
+
 # ==============================================================================
-# EVALUATION (tarayıcı) — hard veto + tek kaynak skor
+# EVALUATION (tarayıcı) — hard veto + tek kaynak skor + yakın çıkış
 # ==============================================================================
 
 def evaluate_symbol(symbol, feat_df, regime_series, weights=None):
@@ -582,7 +625,20 @@ def evaluate_symbol(symbol, feat_df, regime_series, weights=None):
         "RVOL": round(float(row["RVOL"]), 2),
         "RS_20": None if pd.isna(row["RS_20"]) else round(float(row["RS_20"]), 1),
         "Stop": stop, "Target": tp, "RR": rr, "ATR": round(atr, 2),
+        "RR_Net": net_rr(c, stop, tp),
     }
+
+    # --- YAKIN ÇIKIŞ KOLONLARI (v71) ---
+    ne = near_exit_plan(c, atr, stop, tp)
+    if ne:
+        res["BE"] = ne["BE"]              # masraf sonrası başabaş fiyat
+        res["T1"] = ne["T1"]              # YAKIN ÇIKIŞ
+        res["T1%"] = ne["T1_Pct"]         # yüzde kaç yukarıda
+        res["T1_Net%"] = ne["T1_Net"]     # masraf sonrası net kazanç
+        res["Stop_Net%"] = ne["Stop_Net"] # masraf sonrası net kayıp
+        res["BE_WR%"] = ne["BE_WR"]       # başabaş kazanma oranı
+        res["T1_Kar_30k"] = round(30000 * ne["T1_Net"] / 100, 0)  # 30.000 TL'de net TL
+
     return res, "PASS"
 
 
@@ -596,10 +652,7 @@ def _weights_vec(weights):
 
 def simulate_symbol(sym, feat, comp_matrix, reg_arr, weights_vec, min_score,
                     entry_lo=None, entry_hi=None):
-    """Tek sembol için işlem simülasyonu. comp_matrix önceden hesaplanmış
-       bileşenler (n x 5). Skor = 100 * (bileşen . ağırlık) — folddan folda
-       yeniden puanlama yapılmaz. entry_lo/hi: pozisyon yalnızca bu tarih
-       aralığında AÇILABİLİR (walk-forward out-of-sample penceresi)."""
+    """DÜZ ÇIKIŞ: tek hedef (T2), tek stop. v70 davranışı."""
     trades = []
     idx = feat.index
     open_arr = feat["Open"].values
@@ -633,7 +686,6 @@ def simulate_symbol(sym, feat, comp_matrix, reg_arr, weights_vec, min_score,
             if risk <= 0 or rr < CFG.MIN_RR:
                 continue
 
-            # HIZLI SKOR: bileşen . ağırlık (tek kaynak matematiğiyle aynı)
             score = 100.0 * float(np.dot(comp_matrix[i], weights_vec))
             if regime_val == -1:
                 score *= CFG.REGIME_PENALTY
@@ -657,10 +709,112 @@ def simulate_symbol(sym, feat, comp_matrix, reg_arr, weights_vec, min_score,
                 trades.append({
                     "Symbol": sym, "Entry": entry_date, "Exit": idx[i],
                     "Bars": i - entry_i, "PnL_Pct": round(net * 100, 2),
-                    "Reason": reason
+                    "Reason": reason, "T1_Hit": 0
                 })
                 in_pos = False
     return trades
+
+
+def simulate_symbol_scaled(sym, feat, comp_matrix, reg_arr, weights_vec, min_score,
+                           entry_lo=None, entry_hi=None,
+                           t1_r_mult=None, partial=None, move_stop_to_be=None):
+    """YAKIN ÇIKIŞ: T1'de kısmi sat, stop'u başabaşa çek, kalanı T2'ye taşı.
+
+    Aynı bar içinde stop+hedef çakışırsa KÖTÜMSER varsayım (önce stop) korunur.
+    """
+    t1_r_mult = CFG.T1_R_MULT if t1_r_mult is None else t1_r_mult
+    partial = CFG.PARTIAL_PCT if partial is None else partial
+    move_stop_to_be = CFG.MOVE_STOP_TO_BE if move_stop_to_be is None else move_stop_to_be
+
+    trades = []
+    idx = feat.index
+    o = feat["Open"].values
+    h = feat["High"].values
+    l = feat["Low"].values
+    c = feat["Close"].values
+    ema20 = feat["EMA_20"].values
+    atr_a = feat["ATR"].values
+    liq = feat["LiqTL"].values
+
+    slip = CFG.SLIPPAGE_PCT
+    comm = CFG.COMMISSION_PCT
+
+    in_pos = False
+    entry_px = stop = t1 = t2 = 0.0
+    entry_i = entry_date = None
+    t1_done = False
+    realized = 0.0
+
+    for i in range(CFG.MIN_BARS, len(feat) - 1):
+        if not in_pos:
+            d = idx[i]
+            if entry_lo is not None and (d < entry_lo or d > entry_hi):
+                continue
+            regime_val = int(reg_arr[i])
+            if CFG.REGIME_HARD_BLOCK and regime_val == -1:
+                continue
+            atr = atr_a[i]
+            if np.isnan(atr) or atr <= 0 or liq[i] < CFG.MIN_LIQUIDITY_TL:
+                continue
+            if abs(c[i] - ema20[i]) > CFG.MAX_EXTENSION_ATR * atr:
+                continue
+
+            stp, tgt, rr, risk = build_trade_plan(feat.iloc[i])
+            if risk <= 0 or rr < CFG.MIN_RR:
+                continue
+
+            score = 100.0 * float(np.dot(comp_matrix[i], weights_vec))
+            if regime_val == -1:
+                score *= CFG.REGIME_PENALTY
+            if score < min_score:
+                continue
+
+            entry_px = o[i + 1] * (1 + slip)
+            plan = near_exit_plan(entry_px, atr, stp, tgt, t1_r_mult=t1_r_mult)
+            if plan is None:
+                continue
+            stop, t1, t2 = stp, plan["T1"], tgt
+            entry_i, entry_date = i + 1, idx[i + 1]
+            in_pos, t1_done, realized = True, False, 0.0
+        else:
+            hi, lo = h[i], l[i]
+            exit_px = None; reason = None
+
+            if lo <= stop:                      # kötümser: önce stop
+                exit_px = stop * (1 - slip)
+                reason = "BE_STOP" if (t1_done and move_stop_to_be) else "STOP"
+            elif (not t1_done) and hi >= t1:
+                px = t1 * (1 - slip)
+                realized += partial * ((px / entry_px - 1) - 2 * comm)
+                t1_done = True
+                if move_stop_to_be:
+                    stop = entry_px * (1 + 2 * comm)
+                if hi >= t2:                    # aynı barda T2'ye de değdi
+                    exit_px = t2 * (1 - slip)
+                    reason = "TARGET"
+            elif hi >= t2:
+                exit_px = t2 * (1 - slip)
+                reason = "TARGET"
+            elif CFG.MAX_HOLD_BARS and (i - entry_i) >= CFG.MAX_HOLD_BARS:
+                exit_px = c[i] * (1 - slip)
+                reason = "TIME"
+
+            if exit_px is not None:
+                rest = (1 - partial) if t1_done else 1.0
+                realized += rest * ((exit_px / entry_px - 1) - 2 * comm)
+                trades.append({
+                    "Symbol": sym, "Entry": entry_date, "Exit": idx[i],
+                    "Bars": i - entry_i, "PnL_Pct": round(realized * 100, 2),
+                    "Reason": reason, "T1_Hit": int(t1_done)
+                })
+                in_pos = False
+                realized = 0.0
+    return trades
+
+
+def _sim_fn():
+    """Aktif çıkış tarzına göre simülatörü seçer."""
+    return simulate_symbol_scaled if CFG.USE_SCALED_EXIT else simulate_symbol
 
 
 def prepare_feature_maps(data_map, benchmark_close, regime_series, df4_map=None):
@@ -684,17 +838,18 @@ def prepare_feature_maps(data_map, benchmark_close, regime_series, df4_map=None)
 
 
 def run_backtest(data_map, benchmark_close, benchmark_df_4h_map=None,
-                 min_score=None, regime_series=None, weights=None):
+                 min_score=None, regime_series=None, weights=None, sim_fn=None):
     """Tek pencere backtest (varsayılan veya verilen ağırlıklarla)."""
     min_score = CFG.SIGNAL_MIN if min_score is None else min_score
     weights = DEFAULT_WEIGHTS if weights is None else weights
+    sim_fn = _sim_fn() if sim_fn is None else sim_fn
     wv = _weights_vec(weights)
     feat_map, comp_map, reg_map = prepare_feature_maps(
         data_map, benchmark_close, regime_series, benchmark_df_4h_map)
 
     trades = []
     for sym, feat in feat_map.items():
-        trades += simulate_symbol(sym, feat, comp_map[sym], reg_map[sym], wv, min_score)
+        trades += sim_fn(sym, feat, comp_map[sym], reg_map[sym], wv, min_score)
     return pd.DataFrame(trades)
 
 
@@ -703,8 +858,7 @@ def run_backtest(data_map, benchmark_close, benchmark_df_4h_map=None,
 # ------------------------------------------------------------------------------
 
 def build_panel(feat_map, comp_map, horizon=20):
-    """Panel veri: her (tarih, sembol) için 5 bileşen + ileriye dönük getiri.
-       IC kalibrasyonu bu paneli kullanır."""
+    """Panel veri: her (tarih, sembol) için 5 bileşen + ileriye dönük getiri."""
     recs = []
     for sym, feat in feat_map.items():
         comp = comp_map[sym]
@@ -730,9 +884,7 @@ def _spearman(a, b):
 
 
 def compute_ic_weights(panel):
-    """Her faktör için kesitsel IC (her tarihte semboller arası sıra korelasyonu,
-       zaman ortalaması). Ağırlıklar pozitif IC'lerden türetilir (toplam 1).
-       Tahmin gücü olmayan/negatif faktör 0 ağırlık alır."""
+    """Kesitsel IC'den faktör ağırlıkları. Negatif/öngörüsüz faktör 0 ağırlık alır."""
     if panel is None or panel.empty:
         return dict(DEFAULT_WEIGHTS), {f: 0.0 for f in FACTORS}, 0
     ics = {}
@@ -748,33 +900,27 @@ def compute_ic_weights(panel):
 
     pos = {f: max(ics[f], 0.0) for f in FACTORS}
     s = sum(pos.values())
-    if s <= 1e-9:
-        weights = dict(DEFAULT_WEIGHTS)   # hiçbir faktör pozitif değilse varsayılana dön
-    else:
-        weights = {f: pos[f] / s for f in FACTORS}
+    weights = dict(DEFAULT_WEIGHTS) if s <= 1e-9 else {f: pos[f] / s for f in FACTORS}
     return weights, ics, len(panel)
 
 
 # ------------------------------------------------------------------------------
-# WALK-FORWARD VALIDASYON (in-sample kalibrasyon -> out-of-sample test)
+# WALK-FORWARD VALIDASYON
 # ------------------------------------------------------------------------------
 
 def walk_forward_backtest(data_map, benchmark_close, regime_series,
                           df4_map=None, n_folds=4, horizon=20,
-                          initial_train_frac=0.40, min_score=None):
-    """Zamanı fold'lara böler. Her fold için: ağırlıkları YALNIZCA o fold'dan
-       ÖNCEKI veriyle kalibre eder (IC), sonra fold penceresinde OUT-OF-SAMPLE
-       işlem simüle eder. Böylece sonuçlar overfitting'den arındırılmış olur."""
+                          initial_train_frac=0.40, min_score=None, sim_fn=None):
+    """Her fold: ağırlıklar YALNIZCA o folddan önceki veriyle kalibre edilir (IC),
+       sonra fold penceresinde OUT-OF-SAMPLE işlem simüle edilir."""
     min_score = CFG.SIGNAL_MIN if min_score is None else min_score
+    sim_fn = _sim_fn() if sim_fn is None else sim_fn
     feat_map, comp_map, reg_map = prepare_feature_maps(
         data_map, benchmark_close, regime_series, df4_map)
     if not feat_map:
         return pd.DataFrame(), []
 
-    # Global tarih ekseni — ısınma dönemini (MIN_BARS) atla ki eğitim/test
-    # yalnızca skorlanabilir barlardan gelsin (ilk fold da eğitim verisi bulsun).
-    all_dates = sorted(set().union(*[set(f.index) for f in feat_map.values()]))
-    all_dates = pd.DatetimeIndex(all_dates)
+    all_dates = pd.DatetimeIndex(sorted(set().union(*[set(f.index) for f in feat_map.values()])))
     if len(all_dates) < CFG.MIN_BARS + 250:
         return pd.DataFrame(), []
     usable = all_dates[CFG.MIN_BARS:]
@@ -783,9 +929,8 @@ def walk_forward_backtest(data_map, benchmark_close, regime_series,
     start_idx = int(n * initial_train_frac)
     test_span = n - start_idx
     fold_len = max(1, test_span // n_folds)
-    buffer = pd.Timedelta(days=int(horizon * 1.6))  # fwd-getiri sızıntısını engelle
+    buffer = pd.Timedelta(days=int(horizon * 1.6))
 
-    # Panel bir kez oluşturulur; her fold yalnızca tarih filtresi uygular
     panel = build_panel(feat_map, comp_map, horizon=horizon)
 
     all_oos_trades = []
@@ -796,17 +941,15 @@ def walk_forward_backtest(data_map, benchmark_close, regime_series,
         t1 = start_idx + (k + 1) * fold_len if k < n_folds - 1 else n - 1
         test_start = usable[t0]
         test_end = usable[t1]
-        train_cutoff = test_start - buffer   # eğitim verisi buraya kadar (sızıntısız)
+        train_cutoff = test_start - buffer
 
-        # --- IN-SAMPLE KALİBRASYON (train_cutoff'tan önceki panel) ---
         train_panel = panel[panel["date"] < train_cutoff]
         weights, ics, n_obs = compute_ic_weights(train_panel)
         wv = _weights_vec(weights)
 
-        # --- OUT-OF-SAMPLE İŞLEM (yalnızca test penceresinde giriş) ---
         fold_trades = []
         for sym, feat in feat_map.items():
-            fold_trades += simulate_symbol(
+            fold_trades += sim_fn(
                 sym, feat, comp_map[sym], reg_map[sym], wv, min_score,
                 entry_lo=test_start, entry_hi=test_end)
         for tr in fold_trades:
@@ -826,18 +969,16 @@ def walk_forward_backtest(data_map, benchmark_close, regime_series,
 
 
 # ------------------------------------------------------------------------------
-# PORTFÖY-SEVİYE SİMÜLASYON (eşzamanlı pozisyon, sermaye kısıtı, equity eğrisi)
+# PORTFÖY-SEVİYE SİMÜLASYON (kısmi kâr alma destekli)
 # ------------------------------------------------------------------------------
 
 def portfolio_backtest(feat_map, comp_map, reg_map, weights_by_date,
                        min_score=None, initial_capital=None,
-                       max_positions=None, risk_per_trade=None, max_weight=None):
+                       max_positions=None, risk_per_trade=None, max_weight=None,
+                       scaled_exit=None):
     """Olay-güdümlü GÜNLÜK portföy simülasyonu.
-       - Tüm semboller ortak tarih ekseninde birlikte işlenir.
-       - Sinyal kapanışta üretilir, giriş ertesi gün AÇILIŞINDA (look-ahead yok).
-       - Sermaye, eşzamanlı pozisyon tavanı ve risk bazlı boyut birlikte uygulanır.
-       - weights_by_date: {date -> weights_vec}. Bir tarih sözlükte yoksa o gün
-         YENİ pozisyon açılmaz (walk-forward: sadece test pencerelerinde işlem).
+       - Sinyal kapanışta, giriş ertesi gün AÇILIŞINDA (look-ahead yok).
+       - scaled_exit=True ise T1'de kısmi satış + başabaş stop uygulanır.
        Döner: (equity_df, trades_df)
     """
     min_score = CFG.SIGNAL_MIN if min_score is None else min_score
@@ -845,8 +986,8 @@ def portfolio_backtest(feat_map, comp_map, reg_map, weights_by_date,
     max_positions = CFG.MAX_POSITIONS if max_positions is None else max_positions
     risk_per_trade = CFG.RISK_PER_TRADE if risk_per_trade is None else risk_per_trade
     max_weight = CFG.MAX_POSITION_WT if max_weight is None else max_weight
+    scaled_exit = CFG.USE_SCALED_EXIT if scaled_exit is None else scaled_exit
 
-    # Sembol bazında dizileri ve tarih->indeks eşlemesini hazırla
     S = {}
     for sym, feat in feat_map.items():
         idx = feat.index
@@ -863,8 +1004,8 @@ def portfolio_backtest(feat_map, comp_map, reg_map, weights_by_date,
     all_dates = pd.DatetimeIndex(sorted(set().union(*[f.index for f in feat_map.values()])))
 
     cash = initial_capital
-    positions = {}          # sym -> dict(shares, entry_px, stop, tp, entry_date, entry_i, last_close)
-    pending = []            # ertesi gün açılışında açılacak adaylar (sym, score, stop, tp)
+    positions = {}
+    pending = []
     equity_curve = []
     trades = []
     invested_days = 0
@@ -894,46 +1035,78 @@ def portfolio_backtest(feat_map, comp_map, reg_map, weights_by_date,
                 cost = shares * entry_px * (1 + CFG.COMMISSION_PCT)
                 if cost > cash:
                     continue
+
+                t1_px = tgt
+                if scaled_exit:
+                    plan = near_exit_plan(entry_px, s["atr"][i], stp, tgt)
+                    t1_px = plan["T1"] if plan else tgt
+
                 cash -= cost
-                positions[sym] = {"shares": shares, "entry_px": entry_px, "stop": stp,
-                                  "tp": tgt, "entry_date": d, "entry_i": i,
+                positions[sym] = {"shares": shares, "shares0": shares,
+                                  "entry_px": entry_px, "stop": stp,
+                                  "tp": tgt, "t1": t1_px, "t1_done": False,
+                                  "entry_date": d, "entry_i": i,
                                   "last_close": s["close"][i]}
             pending = []
 
-        # 2) ÇIKIŞLARI KONTROL ET (bugünün high/low/close'u ile)
+        # 2) ÇIKIŞLARI KONTROL ET
         for sym in list(positions.keys()):
             s = S[sym]; p = positions[sym]
             if d not in s["idx_map"]:
-                continue  # bugün bu sembolde bar yok; pozisyonu taşı
+                continue
             i = s["idx_map"][d]
             p["last_close"] = s["close"][i]
             exit_px = None; reason = None
-            if s["low"][i] <= p["stop"]:
-                exit_px, reason = p["stop"] * (1 - CFG.SLIPPAGE_PCT), "STOP"
+
+            if s["low"][i] <= p["stop"]:                       # kötümser: önce stop
+                exit_px = p["stop"] * (1 - CFG.SLIPPAGE_PCT)
+                reason = "BE_STOP" if p["t1_done"] else "STOP"
+            elif scaled_exit and (not p["t1_done"]) and s["high"][i] >= p["t1"]:
+                # KISMİ SATIŞ
+                px = p["t1"] * (1 - CFG.SLIPPAGE_PCT)
+                sell_sh = int(p["shares"] * CFG.PARTIAL_PCT)
+                if sell_sh > 0:
+                    cash += sell_sh * px * (1 - CFG.COMMISSION_PCT)
+                    pnl_pct = (px / p["entry_px"] - 1) * 100 - 2 * CFG.COMMISSION_PCT * 100
+                    trades.append({"Symbol": sym, "Entry": p["entry_date"], "Exit": d,
+                                   "Bars": i - p["entry_i"], "PnL_Pct": round(pnl_pct, 2),
+                                   "Reason": "T1_PARTIAL", "T1_Hit": 1})
+                    p["shares"] -= sell_sh
+                p["t1_done"] = True
+                if CFG.MOVE_STOP_TO_BE:
+                    p["stop"] = p["entry_px"] * (1 + 2 * CFG.COMMISSION_PCT)
+                if p["shares"] <= 0:
+                    del positions[sym]
+                    continue
+                if s["high"][i] >= p["tp"]:
+                    exit_px = p["tp"] * (1 - CFG.SLIPPAGE_PCT)
+                    reason = "TARGET"
             elif s["high"][i] >= p["tp"]:
-                exit_px, reason = p["tp"] * (1 - CFG.SLIPPAGE_PCT), "TARGET"
+                exit_px = p["tp"] * (1 - CFG.SLIPPAGE_PCT)
+                reason = "TARGET"
             elif CFG.MAX_HOLD_BARS and (i - p["entry_i"]) >= CFG.MAX_HOLD_BARS:
-                exit_px, reason = s["close"][i] * (1 - CFG.SLIPPAGE_PCT), "TIME"
+                exit_px = s["close"][i] * (1 - CFG.SLIPPAGE_PCT)
+                reason = "TIME"
+
             if exit_px is not None:
-                proceeds = p["shares"] * exit_px * (1 - CFG.COMMISSION_PCT)
-                cash += proceeds
+                cash += p["shares"] * exit_px * (1 - CFG.COMMISSION_PCT)
                 pnl_pct = (exit_px / p["entry_px"] - 1) * 100 - 2 * CFG.COMMISSION_PCT * 100
                 trades.append({"Symbol": sym, "Entry": p["entry_date"], "Exit": d,
                                "Bars": i - p["entry_i"], "PnL_Pct": round(pnl_pct, 2),
-                               "Reason": reason})
+                               "Reason": reason, "T1_Hit": int(p["t1_done"])})
                 del positions[sym]
 
-        # 3) MARK-TO-MARKET (bugünün kapanışı) -> equity eğrisi
+        # 3) MARK-TO-MARKET
         equity = cash + sum(p["shares"] * p["last_close"] for p in positions.values())
         equity_curve.append({"date": d, "equity": equity,
                              "positions": len(positions), "cash": cash})
         if positions:
             invested_days += 1
 
-        # 4) BUGÜNÜN SİNYALLERİNİ ÜRET -> ertesi gün için beklet
+        # 4) BUGÜNÜN SİNYALLERİ -> ertesi gün için beklet
         wv = weights_by_date.get(d)
         if wv is None:
-            continue  # bu tarih bir test penceresinde değil -> yeni giriş yok
+            continue
         if len(positions) >= max_positions:
             continue
         for sym, s in S.items():
@@ -971,10 +1144,9 @@ def portfolio_backtest(feat_map, comp_map, reg_map, weights_by_date,
 
 def walk_forward_portfolio(data_map, benchmark_close, regime_series, df4_map=None,
                            n_folds=4, horizon=20, initial_train_frac=0.40,
-                           min_score=None, initial_capital=None):
-    """Walk-forward + portföy: her fold'un ağırlıkları o dönemden ÖNCEKI veriyle
-       IC ile kalibre edilir, sonra TEK sürekli equity eğrisi üzerinde
-       out-of-sample işlenir (sermaye foldlar arası taşınır)."""
+                           min_score=None, initial_capital=None, scaled_exit=None):
+    """Walk-forward + portföy: her fold'un ağırlıkları o dönemden ÖNCEKİ veriyle
+       IC ile kalibre edilir, sonra TEK sürekli equity eğrisi üzerinde işlenir."""
     feat_map, comp_map, reg_map = prepare_feature_maps(
         data_map, benchmark_close, regime_series, df4_map)
     if not feat_map:
@@ -1001,7 +1173,6 @@ def walk_forward_portfolio(data_map, benchmark_close, regime_series, df4_map=Non
         train_cutoff = test_start - buffer
         weights, ics, n_obs = compute_ic_weights(panel[panel["date"] < train_cutoff])
         wv = _weights_vec(weights)
-        # bu fold'un test penceresindeki her güne ağırlıkları ata
         for d in usable[t0:t1 + 1]:
             weights_by_date[d] = wv
         rep = {"Fold": k + 1, "Test Start": test_start.date().isoformat(),
@@ -1013,9 +1184,14 @@ def walk_forward_portfolio(data_map, benchmark_close, regime_series, df4_map=Non
 
     equity_df, trades_df = portfolio_backtest(
         feat_map, comp_map, reg_map, weights_by_date,
-        min_score=min_score, initial_capital=initial_capital)
+        min_score=min_score, initial_capital=initial_capital,
+        scaled_exit=scaled_exit)
     return equity_df, trades_df, fold_reports
 
+
+# ------------------------------------------------------------------------------
+# METRİKLER
+# ------------------------------------------------------------------------------
 
 def portfolio_metrics(equity_df, trades_df, initial_capital=None):
     """Portföy equity eğrisinden gerçek portföy metrikleri."""
@@ -1039,11 +1215,14 @@ def portfolio_metrics(equity_df, trades_df, initial_capital=None):
         gw = r[r > 0].sum(); gl = -r[r <= 0].sum()
         pf = gw / gl if gl > 0 else float("inf")
     exposure = equity_df.attrs.get("invested_ratio", 0.0) * 100
+    # GÜNLÜK ORTALAMA: kullanıcının "günde X TL" hedefiyle kıyaslamak için
+    daily_avg_pct = (total_ret * 100) / max(len(equity_df), 1)
     return {
         "Başlangıç ₺": f"{initial_capital:,.0f}",
         "Bitiş ₺": f"{final:,.0f}",
         "Toplam Getiri %": round(total_ret * 100, 1),
         "CAGR %": round(cagr * 100, 1),
+        "Günlük Ort. %": round(daily_avg_pct, 3),
         "Max Drawdown %": round(max_dd, 1),
         "Sharpe (yıllık)": round(sharpe, 2),
         "Toplam İşlem": n_trades,
@@ -1054,7 +1233,7 @@ def portfolio_metrics(equity_df, trades_df, initial_capital=None):
 
 
 def backtest_metrics(trades_df):
-    """Profesyonel metrik seti."""
+    """İşlem bazlı profesyonel metrik seti."""
     if trades_df is None or trades_df.empty:
         return {}
     r = trades_df["PnL_Pct"] / 100.0
@@ -1066,11 +1245,11 @@ def backtest_metrics(trades_df):
     gross_win = wins.sum(); gross_loss = -losses.sum()
     profit_factor = (gross_win / gross_loss) if gross_loss > 0 else float("inf")
     expectancy = r.mean() * 100
-    # basit bileşik equity eğrisi (her işlem sıralı, eşit ağırlık varsayımı)
     equity = (1 + r).cumprod()
     peak = equity.cummax()
     max_dd = ((equity - peak) / peak).min() * 100
     sharpe = (r.mean() / (r.std() + 1e-10)) * np.sqrt(len(r)) if len(r) > 1 else 0.0
+    avg_bars = trades_df["Bars"].mean() if "Bars" in trades_df.columns else np.nan
     return {
         "Toplam İşlem": n,
         "Kazanma Oranı %": round(win_rate, 1),
@@ -1078,9 +1257,23 @@ def backtest_metrics(trades_df):
         "Ort. Kayıp %": round(avg_loss, 2),
         "Profit Factor": round(profit_factor, 2) if profit_factor != float("inf") else "∞",
         "Beklenti (Expectancy) %": round(expectancy, 2),
+        "Ort. Tutuş (bar)": round(avg_bars, 1) if not np.isnan(avg_bars) else "-",
         "Max Drawdown %": round(max_dd, 1),
         "Sharpe (yaklaşık)": round(sharpe, 2),
     }
+
+
+def compare_exit_styles(trades_plain, trades_scaled):
+    """Düz hedef vs kısmi kâr alma — yan yana karşılaştırma."""
+    rows = []
+    for name, tdf in (("Düz Hedef (T2)", trades_plain),
+                      ("Kısmi Kâr + BE Stop", trades_scaled)):
+        if tdf is None or tdf.empty:
+            continue
+        m = {"Strateji": name}
+        m.update(backtest_metrics(tdf))
+        rows.append(m)
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
 # ==============================================================================
@@ -1095,14 +1288,15 @@ class DB:
             id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, cash REAL, nav REAL, positions INTEGER)""")
         cur.execute("""CREATE TABLE IF NOT EXISTS active (
             symbol TEXT PRIMARY KEY, entry_date TEXT, entry_price REAL, shares INTEGER,
-            total_cost REAL, stop REAL, target REAL, score REAL, grade TEXT)""")
+            total_cost REAL, stop REAL, t1 REAL, target REAL, score REAL, grade TEXT)""")
         cur.execute("""CREATE TABLE IF NOT EXISTS closed (
             id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, entry_date TEXT, exit_date TEXT,
             entry_price REAL, exit_price REAL, shares INTEGER, pnl REAL, pnl_pct REAL, reason TEXT)""")
         cur.execute("SELECT COUNT(*) FROM ledger")
         if cur.fetchone()[0] == 0:
             cur.execute("INSERT INTO ledger (timestamp, cash, nav, positions) VALUES (?,?,?,?)",
-                        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), CFG.INITIAL_CAPITAL, CFG.INITIAL_CAPITAL, 0))
+                        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                         CFG.INITIAL_CAPITAL, CFG.INITIAL_CAPITAL, 0))
         conn.commit(); conn.close()
 
     @staticmethod
@@ -1121,7 +1315,7 @@ class DB:
         return cash + invested  # paper: maliyet üzerinden (mark-to-cost)
 
     @staticmethod
-    def buy(symbol, price, score, grade, stop, target):
+    def buy(symbol, price, score, grade, stop, t1, target):
         conn = sqlite3.connect(DB_FILE); cur = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM active WHERE symbol=?", (symbol,))
         if cur.fetchone()[0] > 0:
@@ -1134,10 +1328,8 @@ class DB:
         risk_per_share = price - stop
         if risk_per_share <= 0:
             conn.close(); return False, "Geçersiz stop (risk<=0)."
-        # RİSK BAZLI BOYUT: NAV*%risk / hisse başı risk
         risk_budget = nav * CFG.RISK_PER_TRADE
         shares_by_risk = int(risk_budget // risk_per_share)
-        # pozisyon ağırlık tavanı
         max_cost = min(cash, nav * CFG.MAX_POSITION_WT)
         shares_by_cap = int(max_cost // price)
         shares = max(0, min(shares_by_risk, shares_by_cap))
@@ -1149,44 +1341,57 @@ class DB:
             conn.close(); return False, "Nakit yetersiz."
         new_cash = cash - cost
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cur.execute("""INSERT INTO active VALUES (?,?,?,?,?,?,?,?,?)""",
-                    (symbol, now, price, shares, cost, stop, target, score, grade))
+        cur.execute("INSERT INTO active VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (symbol, now, price, shares, cost, stop, t1, target, score, grade))
         cur.execute("SELECT COUNT(*) FROM active"); pc = cur.fetchone()[0]
         cur.execute("INSERT INTO ledger (timestamp, cash, nav, positions) VALUES (?,?,?,?)",
                     (now, new_cash, new_cash + cost, pc))
         conn.commit(); conn.close()
-        return True, f"ALIM: {shares} lot {symbol} @ ₺{price:.2f} (risk ₺{shares*risk_per_share:,.0f})"
+        return True, f"ALIM: {shares} lot {symbol} @ ₺{price:.2f} (risk ₺{shares*risk_per_share:,.0f}) | T1 ₺{t1} • T2 ₺{target}"
 
     @staticmethod
-    def sell(symbol, exit_price, reason="MANUAL"):
+    def sell(symbol, exit_price, reason="MANUAL", partial_pct=1.0):
         conn = sqlite3.connect(DB_FILE); cur = conn.cursor()
         cur.execute("SELECT entry_date, entry_price, shares, total_cost FROM active WHERE symbol=?", (symbol,))
         row = cur.fetchone()
         if not row:
             conn.close(); return False, "Pozisyon yok."
         entry_date, entry_price, shares, cost = row
-        proceeds = shares * exit_price
-        pnl = proceeds - cost
+
+        sell_sh = shares if partial_pct >= 1.0 else int(shares * partial_pct)
+        if sell_sh <= 0:
+            conn.close(); return False, "Satılacak lot 0."
+        part_cost = cost * (sell_sh / shares)
+
+        proceeds = sell_sh * exit_price
+        pnl = proceeds - part_cost
         pnl_pct = (exit_price / entry_price - 1) * 100
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cur.execute("""INSERT INTO closed (symbol, entry_date, exit_date, entry_price, exit_price, shares, pnl, pnl_pct, reason)
-                       VALUES (?,?,?,?,?,?,?,?,?)""",
-                    (symbol, entry_date, now, entry_price, exit_price, shares, pnl, pnl_pct, reason))
-        cur.execute("DELETE FROM active WHERE symbol=?", (symbol,))
+        cur.execute("""INSERT INTO closed (symbol, entry_date, exit_date, entry_price, exit_price,
+                       shares, pnl, pnl_pct, reason) VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (symbol, entry_date, now, entry_price, exit_price, sell_sh, pnl, pnl_pct, reason))
+
+        if sell_sh >= shares:
+            cur.execute("DELETE FROM active WHERE symbol=?", (symbol,))
+        else:
+            cur.execute("UPDATE active SET shares=?, total_cost=? WHERE symbol=?",
+                        (shares - sell_sh, cost - part_cost, symbol))
+
         cur.execute("SELECT cash FROM ledger ORDER BY id DESC LIMIT 1")
         new_cash = float(cur.fetchone()[0]) + proceeds
         cur.execute("SELECT COUNT(*) FROM active"); pc = cur.fetchone()[0]
         cur.execute("INSERT INTO ledger (timestamp, cash, nav, positions) VALUES (?,?,?,?)",
                     (now, new_cash, new_cash, pc))
         conn.commit(); conn.close()
-        return True, f"SATIŞ: {symbol} @ ₺{exit_price:.2f} | PnL ₺{pnl:,.2f} (%{pnl_pct:.2f})"
+        tag = "KISMİ SATIŞ" if sell_sh < shares else "SATIŞ"
+        return True, f"{tag}: {sell_sh} lot {symbol} @ ₺{exit_price:.2f} | PnL ₺{pnl:,.2f} (%{pnl_pct:.2f})"
 
 
 # ==============================================================================
 # STREAMLIT UI
 # ==============================================================================
 
-st.set_page_config(page_title="QUANT MASTER v70 | Signal Engine", page_icon="⚡",
+st.set_page_config(page_title="QUANT MASTER v72 | Signal Engine", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""<style>
@@ -1198,17 +1403,53 @@ border-radius:12px;padding:16px;margin-bottom:12px;}
 </style>""", unsafe_allow_html=True)
 
 
+SCAN_COLS_SHORT = ["Symbol", "Price", "Score", "Grade", "BE", "T1", "T1%",
+                   "T1_Net%", "Stop", "Stop_Net%", "BE_WR%", "T1_Kar_30k",
+                   "Target", "RR", "RR_Net", "ATR"]
+
+
 def main():
     DB.init()
-    st.title("⚡ QUANT MASTER v70 — Institutional Signal Engine")
-    st.caption("Tek kaynak skorlama • IC bazlı faktör kalibrasyonu • Walk-forward (out-of-sample) validasyon • "
-               "Gerçek 4H teyidi • Risk bazlı boyutlandırma")
+    st.title("⚡ QUANT MASTER v72 — Institutional Signal Engine")
+    st.caption("Tek kaynak skorlama • IC bazlı faktör kalibrasyonu • Walk-forward validasyon • "
+               "Gerçek 4H teyidi • Risk bazlı boyutlandırma • YAKIN ÇIKIŞ (T1) sistemi")
 
     st.sidebar.header("Kontrol Merkezi")
     benchmark_sym = st.sidebar.text_input("Benchmark", BENCHMARK_DEFAULT)
     CFG.SIGNAL_MIN = st.sidebar.slider("Sinyal Eşiği (Score)", 60, 95, int(CFG.SIGNAL_MIN))
     CFG.RISK_PER_TRADE = st.sidebar.slider("İşlem Başı Risk %", 0.5, 3.0, CFG.RISK_PER_TRADE * 100, 0.25) / 100
     CFG.REGIME_HARD_BLOCK = st.sidebar.checkbox("Ayı rejiminde long engelle", value=False)
+
+    st.sidebar.divider()
+    st.sidebar.subheader("Çıkış Tarzı")
+    CFG.USE_SCALED_EXIT = st.sidebar.checkbox("Yakın çıkış (T1'de kısmi sat)", value=False)
+    CFG.T1_R_MULT = st.sidebar.slider("T1 mesafesi (R katı)", 0.3, 2.0, CFG.T1_R_MULT, 0.1)
+    CFG.T1_ATR_MULT = st.sidebar.slider("T1 ATR tavanı", 0.5, 3.0, CFG.T1_ATR_MULT, 0.25)
+    st.sidebar.caption("ATR tavanı düşükse T1'i bastırır ve BE_WR'yi yapay olarak "
+                       "yükseltir. 2.0 civarı = R bazlı mesafe belirleyici olur.")
+    CFG.PARTIAL_PCT = st.sidebar.slider("T1'de satılacak oran", 0.25, 1.0, CFG.PARTIAL_PCT, 0.25)
+    CFG.MOVE_STOP_TO_BE = st.sidebar.checkbox("T1 sonrası stop'u başabaşa çek", value=True)
+
+    st.sidebar.divider()
+    st.sidebar.subheader("Risk Simetrisi")
+    CFG.ATR_STOP_MULT = st.sidebar.slider("Stop mesafesi (ATR katı)", 0.5, 3.0, CFG.ATR_STOP_MULT, 0.25)
+    CFG.MIN_RR = st.sidebar.slider("Min R/R vetosu", 0.8, 3.0, CFG.MIN_RR, 0.1)
+    CFG.RESIST_TOLERANCE = st.sidebar.slider("Direnç toleransı", 1.000, 1.020,
+                                             CFG.RESIST_TOLERANCE, 0.002, format="%.3f")
+    st.sidebar.caption("Direnç toleransı yüksekse (örn. 1.010) zirvedeki hisseler "
+                       "gerçek direnç yerine mekanik 3xATR hedefi alır ve RR hep 1.5 çıkar.")
+    st.sidebar.caption("⚠️ Hedefi yakınlaştırırsan stop'u da yakınlaştır. "
+                       "Geniş stop + dar hedef kombinasyonu, yüksek kazanma oranına rağmen "
+                       "para kaybettiren en yaygın kurulumdur.")
+
+    st.sidebar.divider()
+    st.sidebar.subheader("Maliyet")
+    CFG.COMMISSION_PCT = st.sidebar.number_input("Komisyon % (tek yön)", 0.0, 1.0,
+                                                 CFG.COMMISSION_PCT * 100, 0.01) / 100
+    CFG.SLIPPAGE_PCT = st.sidebar.number_input("Slipaj % (tek yön)", 0.0, 1.0,
+                                               CFG.SLIPPAGE_PCT * 100, 0.01) / 100
+    st.sidebar.caption(f"Gidiş-dönüş toplam maliyet: %{CFG.round_trip_cost()*100:.2f}")
+
     run_btn = st.sidebar.button("🚀 BIST 100 Tara", use_container_width=True)
 
     cash, active_df = DB.state()
@@ -1232,7 +1473,7 @@ def main():
                 bench_close = bench_df["Close"] if bench_df is not None else None
                 regime = compute_regime(bench_df)
 
-                active_weights = st.session_state.get("calib_weights")  # walk-forward'dan gelirse
+                active_weights = st.session_state.get("calib_weights")
                 results, vetoed = [], []
                 for sym in BIST100_TICKERS:
                     df1 = data_1d.get(sym)
@@ -1261,9 +1502,23 @@ def main():
 
         if "res" in st.session_state and not st.session_state["res"].empty:
             rdf = st.session_state["res"]
-            gf = st.radio("Sınıf", ["TÜMÜ", "A+", "A", "B+", "WATCH"], horizontal=True)
+            cc = st.columns([2, 2])
+            gf = cc[0].radio("Sınıf", ["TÜMÜ", "A+", "A", "B+", "WATCH"], horizontal=True)
+            view = cc[1].radio("Görünüm", ["Çıkış Planı", "Tüm Kolonlar"],
+                               horizontal=True, index=0)
+
             fdf = rdf if gf == "TÜMÜ" else rdf[rdf["Grade"] == gf]
-            st.dataframe(fdf, use_container_width=True, height=420)
+
+            if view == "Çıkış Planı":
+                cols = [c for c in SCAN_COLS_SHORT if c in fdf.columns]
+                st.dataframe(fdf[cols], use_container_width=True, height=420)
+                st.caption(
+                    "**T1** = yakın çıkış • **BE** = masraf sonrası başabaş fiyat • "
+                    "**BE_WR%** = bu planın başabaş kazanma oranı (45-55 iyi, 75+ matematiksel olarak zor) • "
+                    "**T1_Kar_30k** = 30.000 TL pozisyonda T1'de net kâr (TL)"
+                )
+            else:
+                st.dataframe(fdf, use_container_width=True, height=420)
 
             with st.expander(f"Elenenler ({len(st.session_state.get('veto', []))})"):
                 if not st.session_state.get("veto", pd.DataFrame()).empty:
@@ -1277,7 +1532,8 @@ def main():
                 st.write(""); st.write("")
                 if st.button("Alım Yap", use_container_width=True) and sel:
                     r = fdf[fdf["Symbol"] == sel].iloc[0]
-                    ok, msg = DB.buy(r["Symbol"], r["Price"], r["Score"], r["Grade"], r["Stop"], r["Target"])
+                    ok, msg = DB.buy(r["Symbol"], r["Price"], r["Score"], r["Grade"],
+                                     r["Stop"], r.get("T1", r["Target"]), r["Target"])
                     (st.success if ok else st.error)(msg)
                     if ok: st.rerun()
         else:
@@ -1289,14 +1545,17 @@ def main():
         _, adf = DB.state()
         if not adf.empty:
             st.dataframe(adf, use_container_width=True)
-            s1, s2, s3 = st.columns([2, 2, 1])
+            s1, s2, s3, s4 = st.columns([2, 2, 2, 1])
             with s1: ssym = st.selectbox("Kapat", adf["symbol"].tolist())
             with s2: sprice = st.number_input("Satış Fiyatı ₺", value=0.0, step=0.5)
-            with s3:
+            with s3: spart = st.selectbox("Miktar", ["Tamamı", "Yarısı (T1)", "Çeyreği"])
+            with s4:
                 st.write(""); st.write("")
-                if st.button("Kapat", use_container_width=True):
+                if st.button("Sat", use_container_width=True):
                     if sprice > 0:
-                        ok, msg = DB.sell(ssym, sprice)
+                        pct = {"Tamamı": 1.0, "Yarısı (T1)": 0.5, "Çeyreği": 0.25}[spart]
+                        rsn = "T1_PARTIAL" if pct < 1.0 else "MANUAL"
+                        ok, msg = DB.sell(ssym, sprice, reason=rsn, partial_pct=pct)
                         (st.success if ok else st.error)(msg)
                         if ok: st.rerun()
                     else:
@@ -1311,8 +1570,11 @@ def main():
         cdf = pd.read_sql_query("SELECT * FROM closed ORDER BY id DESC", conn); conn.close()
         if not cdf.empty:
             st.dataframe(cdf, use_container_width=True)
+            m1, m2, m3 = st.columns(3)
             wr = (cdf["pnl"] > 0).mean() * 100
-            st.metric("Gerçekleşen Kazanma Oranı", f"%{wr:.1f}")
+            m1.metric("Gerçekleşen Kazanma Oranı", f"%{wr:.1f}")
+            m2.metric("Toplam PnL", f"₺{cdf['pnl'].sum():,.0f}")
+            m3.metric("İşlem Başı Ort.", f"₺{cdf['pnl'].mean():,.0f}")
         else:
             st.info("Geçmiş işlem yok.")
 
@@ -1325,53 +1587,80 @@ def main():
             "Mod",
             ["Standart (tek pencere, işlem bazlı)",
              "Walk-Forward + IC (işlem bazlı, out-of-sample)",
-             "Walk-Forward PORTFÖY (sermaye kısıtlı, equity eğrisi) ⭐"],
+             "Walk-Forward PORTFÖY (sermaye kısıtlı, equity eğrisi) ⭐",
+             "ÇIKIŞ TARZI KARŞILAŞTIRMASI (düz hedef vs kısmi kâr) 🔬"],
             index=2)
 
+        n_folds, horizon = 4, 20
         if mode.startswith("Walk-Forward PORTFÖY"):
             p1, p2, p3 = st.columns(3)
             n_folds = p1.slider("Fold sayısı", 2, 6, 4)
             horizon = p2.slider("Getiri ufku (gün)", 5, 40, 20)
             CFG.MAX_POSITIONS = p3.slider("Max eşzamanlı pozisyon", 3, 20, CFG.MAX_POSITIONS)
             st.caption("Gerçek portföy muhasebesi: eşzamanlı pozisyonlar, sermaye kısıtı, "
-                       "risk bazlı boyut, foldlar arası taşınan sürekli equity eğrisi. "
-                       "Ağırlıklar her fold öncesi IC ile kalibre edilir (out-of-sample).")
+                       "risk bazlı boyut, foldlar arası taşınan sürekli equity eğrisi.")
         elif mode.startswith("Walk-Forward + IC"):
             wf1, wf2 = st.columns(2)
             n_folds = wf1.slider("Fold sayısı", 2, 6, 4)
             horizon = wf2.slider("İleriye dönük getiri ufku (gün)", 5, 40, 20)
-            st.caption("Her fold: ağırlıklar YALNIZCA o dönemden önceki veriyle "
-                       "IC ile kalibre edilir, sonra görülmemiş dönemde test edilir.")
+        elif mode.startswith("ÇIKIŞ TARZI"):
+            st.caption("Aynı sinyaller, aynı dönem, iki farklı çıkış kuralı. "
+                       "Yakın çıkışın gerçekten daha iyi olup olmadığını VERİ söyler — "
+                       "kazanma oranı değil, **Beklenti (Expectancy)** ve **Profit Factor** kolonlarına bak.")
         else:
             st.caption("Komisyon+slipaj dahil • look-ahead engelli • aynı barda stop+hedef çakışması kötümser.")
 
         if st.button("🧪 Çalıştır"):
-            with st.spinner("Veri çekiliyor ve simülasyon yapılıyor... (walk-forward biraz sürebilir)"):
+            with st.spinner("Veri çekiliyor ve simülasyon yapılıyor..."):
                 syms = BIST100_TICKERS[:n_sym]
                 data_bt = fetch_universe(syms, interval="1d", period="3y")
                 bench_df = fetch_ticker(benchmark_sym, period="3y", interval="1d")
                 bench_close = bench_df["Close"] if bench_df is not None else None
                 regime = compute_regime(bench_df)
 
-                if mode.startswith("Walk-Forward PORTFÖY"):
+                if mode.startswith("ÇIKIŞ TARZI"):
+                    t_plain = run_backtest(data_bt, bench_close, None,
+                                           regime_series=regime, sim_fn=simulate_symbol)
+                    t_scaled = run_backtest(data_bt, bench_close, None,
+                                            regime_series=regime, sim_fn=simulate_symbol_scaled)
+                    cmp_df = compare_exit_styles(t_plain, t_scaled)
+                    if not cmp_df.empty:
+                        st.markdown("#### 🔬 Çıkış Tarzı Karşılaştırması")
+                        st.dataframe(cmp_df, use_container_width=True)
+                        st.info("Kazanma oranı yükselip Beklenti düşüyorsa, yakın çıkış "
+                                "sana daha 'iyi hissettiriyor' ama daha az kazandırıyor demektir.")
+                        c_a, c_b = st.columns(2)
+                        with c_a:
+                            st.markdown("**Düz Hedef İşlemleri**")
+                            st.dataframe(t_plain.sort_values("Exit", ascending=False)
+                                         if not t_plain.empty else pd.DataFrame(),
+                                         use_container_width=True, height=300)
+                        with c_b:
+                            st.markdown("**Kısmi Kâr İşlemleri**")
+                            st.dataframe(t_scaled.sort_values("Exit", ascending=False)
+                                         if not t_scaled.empty else pd.DataFrame(),
+                                         use_container_width=True, height=300)
+                    else:
+                        st.warning("Kriterlere uyan işlem üretilmedi.")
+
+                elif mode.startswith("Walk-Forward PORTFÖY"):
                     equity_df, trades, folds = walk_forward_portfolio(
-                        data_bt, bench_close, regime, n_folds=n_folds, horizon=horizon)
+                        data_bt, bench_close, regime, n_folds=n_folds, horizon=horizon,
+                        scaled_exit=CFG.USE_SCALED_EXIT)
 
                     if equity_df is not None and not equity_df.empty:
                         m = portfolio_metrics(equity_df, trades)
                         st.markdown("#### 💰 Portföy Sonuçları (Out-of-Sample, sürekli equity)")
-                        cols = st.columns(5)
+                        cols = st.columns(4)
                         for i, (k, v) in enumerate(m.items()):
-                            cols[i % 5].metric(k, v)
+                            cols[i % 4].metric(k, v)
 
                         st.markdown("#### 📈 Özsermaye (Equity) Eğrisi")
-                        eq_plot = equity_df.set_index("date")["equity"]
-                        st.line_chart(eq_plot)
+                        st.line_chart(equity_df.set_index("date")["equity"])
 
                         st.markdown("#### 🎯 Fold Bazında IC Ağırlıkları")
                         st.dataframe(pd.DataFrame(folds), use_container_width=True)
 
-                        # son fold ağırlıklarını tarayıcıya aktar
                         if folds:
                             last = folds[-1]
                             st.session_state["calib_weights"] = {f: last[f + " W%"] / 100.0 for f in FACTORS}
@@ -1385,8 +1674,7 @@ def main():
 
                 elif mode.startswith("Walk-Forward + IC"):
                     trades, folds = walk_forward_backtest(
-                        data_bt, bench_close, regime,
-                        n_folds=n_folds, horizon=horizon)
+                        data_bt, bench_close, regime, n_folds=n_folds, horizon=horizon)
 
                     if trades is not None and not trades.empty:
                         st.markdown("#### 📊 Out-of-Sample Sonuçlar (birleşik)")
@@ -1396,27 +1684,22 @@ def main():
                             cols[i % 4].metric(k, v)
 
                         st.markdown("#### 🎯 Fold Bazında Faktör IC ve Türetilen Ağırlıklar")
-                        fold_df = pd.DataFrame(folds)
-                        st.dataframe(fold_df, use_container_width=True)
+                        st.dataframe(pd.DataFrame(folds), use_container_width=True)
 
-                        # Son fold'un ağırlıklarını tarayıcıya aktar
                         if folds:
                             last = folds[-1]
-                            calib = {f: last[f + " W%"] / 100.0 for f in FACTORS}
-                            st.session_state["calib_weights"] = calib
+                            st.session_state["calib_weights"] = {f: last[f + " W%"] / 100.0 for f in FACTORS}
                             st.markdown("#### ⚖️ Ortalama Faktör IC (öngörü gücü)")
                             avg_ic = {f: round(np.mean([fo[f + " IC"] for fo in folds]), 3) for f in FACTORS}
                             ic_cols = st.columns(len(FACTORS))
                             for i, f in enumerate(FACTORS):
                                 ic_cols[i].metric(f + " IC", avg_ic[f])
-                            st.info("En son fold'un ağırlıkları tarayıcıya aktarıldı. "
-                                    "Tarama sekmesinde artık kalibre ağırlıklar kullanılacak. "
-                                    "(Pozitif IC = faktörün gelecek getiriyle pozitif ilişkisi.)")
+                            st.info("Son fold'un ağırlıkları tarayıcıya aktarıldı.")
 
                         st.markdown("#### 📜 İşlemler (OOS)")
                         st.dataframe(trades.sort_values("Exit", ascending=False), use_container_width=True)
                     else:
-                        st.warning("Yeterli veri/işlem üretilemedi. Hisse sayısını veya dönemi artırın.")
+                        st.warning("Yeterli veri/işlem üretilemedi.")
                 else:
                     trades = run_backtest(data_bt, bench_close, None, regime_series=regime)
                     if not trades.empty:
@@ -1435,10 +1718,10 @@ def main():
 
     st.divider()
     st.caption("⚠️ Eğitim/araştırma amaçlıdır. Yatırım tavsiyesi değildir. "
-               "Walk-forward out-of-sample validasyon overfitting'i azaltır ama tek başına edge garantisi değildir. "
-               "Kalan yapısal sınır: yfinance verisi survivorship-bias içerir (bugünkü endeks üyeleri); "
-               "point-in-time üyelik için kurumsal veri sağlayıcı gerekir. "
-               "Geçmiş performans gelecek getiriyi garanti etmez.")
+               "Sistem GÜNLÜK bar üzerinde çalışır; ortalama tutuş süresi günler-haftalardır, "
+               "intraday bir araç değildir. Walk-forward out-of-sample validasyon overfitting'i "
+               "azaltır ama tek başına edge garantisi değildir. yfinance verisi survivorship-bias "
+               "içerir (bugünkü endeks üyeleri). Geçmiş performans gelecek getiriyi garanti etmez.")
 
 
 if __name__ == "__main__":
